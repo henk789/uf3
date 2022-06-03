@@ -179,6 +179,11 @@ def uf3_interaction(
     # sane default value is now standard, due to featurization simplification in original uf3
     angular_cutoff = cutoff * 2
 
+    k = 3
+    min1 = knots[0][k]
+    min2 = knots[1][k]
+    min3 = knots[2][k]
+
     dR23 = dR13 - dR12
     dr12 = space.distance(dR12)
     dr13 = space.distance(dR13)
@@ -189,22 +194,22 @@ def uf3_interaction(
 
     # 3-D Spline
     k = 3
-    spline1 = jit(vmap(partial(jsp.deBoor_factor_unsafe, k, knots[0])))
-    spline2 = jit(vmap(partial(jsp.deBoor_factor_unsafe, k, knots[1])))
-    spline3 = jit(vmap(partial(jsp.deBoor_factor_unsafe, k, knots[2])))
+    spline1 = jit(partial(jsp.deBoor_factor_unsafe, k, knots[0]))
+    spline2 = jit(partial(jsp.deBoor_factor_unsafe, k, knots[1]))
+    spline3 = jit(partial(jsp.deBoor_factor_unsafe, k, knots[2]))
 
-    within_cutoff = (dr12 > 0) & (dr13 > 0) & (jnp.linalg.norm(dr23) > 1e-5)
+    within_cutoff = (dr12 > min1) & (dr13 > min2) & (dr23 > min3)
     return jnp.where(
         within_cutoff,
         jnp.einsum(
             coefficients,
             [1, 2, 3],
             spline1(dr12),
-            [4, 1],
+            [1],
             spline2(dr13),
-            [4, 2],
+            [2],
             spline3(dr23),
-            [4, 3],
+            [3],
         ),
         0,
     )
@@ -212,4 +217,4 @@ def uf3_interaction(
 
 def uf3_mapped(dR12, dR13, coefficients=None, knots=None, cutoff=3.5, **kwargs):
     fn = partial(uf3_interaction, coefficients=coefficients, knots=knots, cutoff=cutoff)
-    return vmap(vmap(fn, (0, None)), (None, 0))(dR12, dR13)
+    return vmap(vmap(vmap(fn, (0, None)), (None, 0)))(dR12, dR13)
