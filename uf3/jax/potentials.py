@@ -47,67 +47,13 @@ def uf2_pair(
         dR = space.map_product(d)(R, R)
         dr = space.distance(dR)
 
-        two_body_fn = partial(mapped_uf2_interaction, **_kwargs)
+        two_body_fn = partial(uf2_mapped, **_kwargs)
 
         two_body_term = util.high_precision_sum(two_body_fn(dr)) / 2.0
 
         return two_body_term
 
     return compute_fn
-
-
-def uf2_neighbor(
-    displacement,
-    box_size,
-    # species=None,
-    cutoff=5.5,
-    dr_threshold: float = 0.5,
-    format: NeighborListFormat = partition.Dense,
-    **kwargs
-):
-    """
-    2-body neighbor list potential.
-    coefficients, knots need to be supplied to uf2_neighbor or the returned compute function.
-    More user friendly way is in the works.
-
-    Species parameter not yet supported.
-
-    For usage see the example notebooks here or in the JAX MD package
-
-    Better docstrings comming!
-    """
-
-    r_cutoff = jnp.array(cutoff, jnp.float32)
-    dr_threshold = jnp.float32(dr_threshold)
-
-    _two_body_fn = partial(mapped_uf2_interaction, cutoff=cutoff)
-
-    neighbor_fn = partition.neighbor_list(
-        displacement, box_size, r_cutoff, dr_threshold, format=format, **kwargs
-    )
-
-    def energy_fn(R, neighbor, **dynamic_kwargs):
-
-        _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
-        d = partial(displacement, **_kwargs)
-        mask = partition.neighbor_list_mask(neighbor)
-
-        if neighbor.format is partition.Dense:
-            dR = space.map_neighbor(d)(R, R[neighbor.idx])
-            dr = space.distance(dR)
-
-            two_body_fn = partial(_two_body_fn, **_kwargs)
-
-            first_term = util.high_precision_sum(two_body_fn(dr) * mask)
-        else:
-            raise NotImplementedError(
-                "Stillinger-Weber potential only implemented "
-                "with Dense neighbor lists."
-            )
-
-        return first_term
-
-    return neighbor_fn, energy_fn
 
 
 def get_stress_fn(energy_fn, box):
@@ -155,10 +101,12 @@ def uf2_interaction(
     within_cutoff = (dr > 0) & (dr < cutoff) & (dr >= mint) & (dr < maxt)
     dr = jnp.where(within_cutoff, dr, 0.0)
     spline = jit(vmap(partial(jsp.deBoor_factor_unsafe, k, knots)))
-    return jnp.where(within_cutoff, jnp.sum(coefficients * spline(dr), 1), 0.0)
+    return jnp.where(
+        within_cutoff, jnp.sum(coefficients * spline(dr), 1), 0.0
+    )  # TODO check performance vs einsum
 
 
-def mapped_uf2_interaction(
+def uf2_mapped(
     dr: Array,
     coefficients: Array = None,
     knots: Array = None,
