@@ -56,6 +56,131 @@ def uf2_pair(
     return compute_fn
 
 
+def uf23_pair(
+    displacement,
+    # species = None,
+    **kwargs
+) -> Callable[[Array], Array]:
+    """
+    #TODO test
+    """
+
+    def compute_fn(R, **dynamic_kwargs):
+        _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
+
+        d = partial(displacement, **_kwargs)
+        dR = space.map_product(d)(R, R)
+        dr = space.distance(dR)
+
+        two_body_fn = partial(uf2_mapped, **_kwargs)
+        three_body_fn = partial(uf3_mapped, **_kwargs)
+
+        two_body_term = util.high_precision_sum(two_body_fn(dr)) / 2.0
+        three_body_term = util.high_precision_sum(three_body_fn(dR, dR)) / 2.0
+
+        return two_body_term + three_body_term
+
+    return compute_fn
+
+
+def uf2_neighbor(
+    displacement,
+    box_size,
+    # species=None,
+    cutoff=5.5,
+    dr_threshold: float = 0.5,
+    format: NeighborListFormat = partition.Dense,
+    **kwargs
+):
+    """
+    2-body neighbor list potential.
+    coefficients, knots need to be supplied to uf2_neighbor or the returned compute function.
+    More user friendly way is in the works.
+
+    Species parameter not yet supported.
+
+    For usage see the example notebooks here or in the JAX MD package
+
+    Better docstrings comming!
+    """
+
+    r_cutoff = jnp.array(cutoff, jnp.float32)
+    dr_threshold = jnp.float32(dr_threshold)
+
+    _two_body_fn = partial(uf2_mapped, cutoff=cutoff)
+
+    neighbor_fn = partition.neighbor_list(
+        displacement, box_size, r_cutoff, dr_threshold, format=format, **kwargs
+    )
+
+    def energy_fn(R, neighbor, **dynamic_kwargs):
+
+        _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
+        d = partial(displacement, **_kwargs)
+        mask = partition.neighbor_list_mask(neighbor)
+
+        if neighbor.format is partition.Dense:
+            dR = space.map_neighbor(d)(R, R[neighbor.idx])
+            dr = space.distance(dR)
+
+            two_body_fn = partial(_two_body_fn, **_kwargs)
+
+            first_term = util.high_precision_sum(two_body_fn(dr) * mask)
+        else:
+            raise NotImplementedError(
+                "UF2 potential only implemented with Dense neighbor lists."
+            )
+
+        return first_term
+
+    return neighbor_fn, energy_fn
+
+
+def uf23_neighbor(
+    displacement,
+    box_size,
+    # species=None,
+    cutoff=5.5,
+    dr_threshold: float = 0.5,
+    format: NeighborListFormat = partition.Dense,
+    **kwargs
+):
+    """
+    #TODO test
+    """
+
+    r_cutoff = jnp.array(cutoff, jnp.float32)
+    dr_threshold = jnp.float32(dr_threshold)
+
+    _two_body_fn = partial(uf2_mapped, cutoff=cutoff)
+
+    neighbor_fn = partition.neighbor_list(
+        displacement, box_size, r_cutoff, dr_threshold, format=format, **kwargs
+    )
+
+    def energy_fn(R, neighbor, **dynamic_kwargs):
+
+        _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
+        d = partial(displacement, **_kwargs)
+        mask = partition.neighbor_list_mask(neighbor)
+
+        if neighbor.format is partition.Dense:
+            dR = space.map_neighbor(d)(R, R[neighbor.idx])
+            dr = space.distance(dR)
+
+            two_body_fn = partial(_two_body_fn, **_kwargs)
+
+            first_term = util.high_precision_sum(two_body_fn(dr) * mask)
+        else:
+            raise NotImplementedError(
+                "UF23 potential only implemented with Dense neighbor lists."
+            )
+
+        return first_term
+
+    return neighbor_fn, energy_fn
+
+
 def get_stress_fn(energy_fn, box):
     """
     Stress transformation adapted from
