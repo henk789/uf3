@@ -153,6 +153,7 @@ def uf23_neighbor(
     dr_threshold = jnp.float32(dr_threshold)
 
     _two_body_fn = partial(uf2_mapped, cutoff=cutoff)
+    _three_body_fn = partial(uf3_mapped, cutoff3=cutoff)
 
     neighbor_fn = partition.neighbor_list(
         displacement, box_size, r_cutoff, dr_threshold, format=format, **kwargs
@@ -168,15 +169,19 @@ def uf23_neighbor(
             dR = space.map_neighbor(d)(R, R[neighbor.idx])
             dr = space.distance(dR)
 
+            # maybe need to check if cutoff for 3-body is resupplied? -> need to change config parameter handling anyway
             two_body_fn = partial(_two_body_fn, **_kwargs)
+            three_body_fn = partial(_three_body_fn, **_kwargs)
 
-            first_term = util.high_precision_sum(two_body_fn(dr) * mask)
+            two_body_term = util.high_precision_sum(two_body_fn(dr) * mask)
+            mask_ijk = mask[:, None, :] * mask[:, :, None] #TODO how does the mask work? And does it with uf3?
+            three_body_term = util.high_precision_sum(three_body_fn(dR, dR) * mask_ijk)
         else:
             raise NotImplementedError(
                 "UF23 potential only implemented with Dense neighbor lists."
             )
 
-        return first_term
+        return two_body_term + three_body_term
 
     return neighbor_fn, energy_fn
 
@@ -288,6 +293,6 @@ def uf3_interaction(
     )
 
 
-def uf3_mapped(dR12, dR13, coefficients=None, knots=None, cutoff=3.5, **kwargs):
-    fn = partial(uf3_interaction, coefficients=coefficients, knots=knots, cutoff=cutoff)
+def uf3_mapped(dR12, dR13, coefficients3=None, knots3=None, cutoff3=3.5, **kwargs):
+    fn = partial(uf3_interaction, coefficients=coefficients3, knots=knots3, cutoff=cutoff3)
     return vmap(vmap(vmap(fn, (0, None)), (None, 0)))(dR12, dR13)
