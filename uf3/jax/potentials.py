@@ -95,15 +95,18 @@ def uf2_neighbor(
     **kwargs
 ):
     """
-    2-body neighbor list potential.
-    coefficients, knots need to be supplied to uf2_neighbor or the returned compute function.
-    More user friendly way is in the works.
+    Supports only dense neighbor lists.
 
-    Species parameter not yet supported.
+    2-body neighbor list potential.
+    coefficients, knots need to be supplied to uf2_neighbor
+    More user friendly way is in the works.
 
     For usage see the example notebooks here or in the JAX MD package
 
-    Better docstrings comming!
+    if species are None then knots and coefficients shoud be Arrays
+
+    if species is specified then knots and coefficients need to be dicts
+    with the arrays for the interactions given as tuples (i,j) where i,j are ints for the species
     """
 
     r_cutoff = jnp.array(cutoff, jnp.float32)
@@ -146,7 +149,8 @@ def uf2_neighbor(
         for k, v in knots.items():
             two_body_splines[k] = partial(uf2_mapped, knots=v, cutoff=v[-3])
 
-        max_species = jnp.max(species)
+        max_species = len(species)
+        species_enum = jnp.arange(max_species)
 
         if coefficients is None:
             coefficients = {}
@@ -158,38 +162,26 @@ def uf2_neighbor(
             tmp = _kwargs.get("coefficients", {})
             _coefficients = util.merge_dicts(coefficients, tmp)
 
-            mask = partition.neighbor_list_mask(neighbor)
-
             if neighbor.format is partition.Dense:
-                d = space.map_neighbor(d)
-                R_neigh = R[neighbor.idx]
-                dR = d(R, R_neigh)
+                dR = space.map_neighbor(d)(R, R[neighbor.idx])
                 dr = space.distance(dR)
 
                 two_body_term = 0.0
+
+                mask = neighbor.idx < max_species
 
                 for k, s in two_body_splines.items():
                     i, j = k
                     normalization = 1.0
                     if i == j:
                         normalization = 2.0
-                    idx = jnp.where(
-                        species == j, jnp.arange(len(species)), len(species)
-                    )
-                    jmask = jnp.isin(neighbor.idx, idx)
+                    idx = jnp.where(species == j, species_enum, max_species)
+                    mask_j = jnp.isin(neighbor.idx, idx) * mask
+                    mask_ij = (i == species)[:, None] * mask_j
+
                     fn = partial(s, coefficients=_coefficients[k])
                     two_body_term += (
-                        util.high_precision_sum(
-                            jnp.where(
-                                jnp.logical_and(
-                                    (species == i)[:, jnp.newaxis],
-                                    jnp.logical_and(jmask, neighbor.idx < len(species)),
-                                ),
-                                fn(dr),
-                                0.0,
-                            )
-                        )
-                        / normalization
+                        util.high_precision_sum(fn(dr) * mask_ij) / normalization
                     )
 
             else:
@@ -204,51 +196,150 @@ def uf2_neighbor(
 def uf3_neighbor(
     displacement,
     box_size,
-    # species=None,
+    species=None,
+    coefficients2=None,
+    knots2=None,
+    coefficients3=None,
+    knots3=None,
     cutoff=5.5,
     dr_threshold: float = 0.5,
     format: NeighborListFormat = partition.Dense,
     **kwargs
 ):
     """
-    #TODO test
+    2-body neighbor list potential.
+    coefficients, knots need to be supplied to uf2_neighbor or the returned compute function.
+    More user friendly way is in the works.
+
+    Species parameter not yet supported.
+
+    For usage see the example notebooks here or in the JAX MD package
+
+    Better docstrings comming!
     """
 
     r_cutoff = jnp.array(cutoff, jnp.float32)
     dr_threshold = jnp.float32(dr_threshold)
 
-    _two_body_fn = partial(uf2_mapped, cutoff=cutoff)
-    _three_body_fn = partial(uf3_mapped, cutoff3=cutoff)
-
     neighbor_fn = partition.neighbor_list(
         displacement, box_size, r_cutoff, dr_threshold, format=format, **kwargs
     )
 
-    def energy_fn(R, neighbor, **dynamic_kwargs):
+    if species is None:
+        two_body_fn = partial(uf2_mapped, knots=knots2, cutoff=cutoff)
+        three_body_fn = partial(uf3_mapped, knots3=knots3, cutoff3=knots3[0][-3])
 
-        _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
-        d = partial(displacement, **_kwargs)
-        mask = partition.neighbor_list_mask(neighbor)
+        def energy_fn(R, neighbor, **dynamic_kwargs):
 
-        if neighbor.format is partition.Dense:
-            dR = space.map_neighbor(d)(R, R[neighbor.idx])
-            dr = space.distance(dR)
+            _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
 
-            # maybe need to check if cutoff for 3-body is resupplied? -> need to change config parameter handling anyway
-            two_body_fn = partial(_two_body_fn, **_kwargs)
-            three_body_fn = partial(_three_body_fn, **_kwargs)
+            _coefficients2 = _kwargs.get("coefficients2", coefficients2)
+            _coefficients3 = _kwargs.get("coefficients3", coefficients3)
 
-            two_body_term = util.high_precision_sum(two_body_fn(dr) * mask)
-            mask_ijk = (
-                mask[:, None, :] * mask[:, :, None]
-            )  # TODO how does the mask work? And does it with uf3?
-            three_body_term = util.high_precision_sum(three_body_fn(dR, dR) * mask_ijk)
-        else:
-            raise NotImplementedError(
-                "UF23 potential only implemented with Dense neighbor lists."
-            )
+            d = partial(displacement, **_kwargs)
+            mask = partition.neighbor_list_mask(neighbor)
+            # diag = jnp.diag(jnp.ones(neighbor.idx.shape[1]))
+            # diag_mask = diag == 0
+            # mask_ijk = jnp.logical_and(diag_mask[None,:,:], mask[:,None,:] * mask[:,:,None])
+            mask_ijk = mask[:, None, :] * mask[:, :, None]
 
-        return two_body_term + three_body_term
+            if neighbor.format is partition.Dense:
+                dR = space.map_neighbor(d)(R, R[neighbor.idx])
+                dr = space.distance(dR)
+
+                two_body_term = (
+                    util.high_precision_sum(
+                        two_body_fn(dr, coefficients=_coefficients2) * mask
+                    )
+                    / 2.0
+                )
+
+                three_body_term = (
+                    util.high_precision_sum(
+                        three_body_fn(dR, dR, coefficients3=_coefficients3) * mask_ijk
+                    )
+                ) / 2.0
+            else:
+                raise NotImplementedError(
+                    "UF3 potential only implemented with Dense neighbor lists."
+                )
+            print(three_body_term)
+            return two_body_term + three_body_term
+
+    else:
+        two_body_splines = {}
+        for k, v in knots2.items():
+            two_body_splines[k] = partial(uf2_mapped, knots=v, cutoff=v[-3])
+        three_body_splines = {}
+        for k, v in knots3.items():
+            three_body_splines[k] = partial(uf3_mapped, knots3=v, cutoff3=v[0][-3])
+
+        max_species = len(species)
+        species_enum = jnp.arange(max_species)
+
+        if coefficients2 is None:
+            coefficients2 = {}
+        if coefficients3 is None:
+            coefficients3 = {}
+
+        def energy_fn(R, neighbor, **dynamic_kwargs):
+            _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
+            d = partial(displacement, **_kwargs)
+
+            tmp = _kwargs.get("coefficients2", {})
+            _coefficients2 = util.merge_dicts(coefficients2, tmp)
+            tmp = _kwargs.get("coefficients3", {})
+            _coefficients3 = util.merge_dicts(coefficients3, tmp)
+
+            if neighbor.format is partition.Dense:
+                dR = space.map_neighbor(d)(R, R[neighbor.idx])
+                dr = space.distance(dR)
+
+                two_body_term = 0.0
+
+                mask = neighbor.idx < len(neighbor.idx)
+
+                for k, s in two_body_splines.items():
+                    i, j = k
+                    normalization = 1.0
+                    if i == j:
+                        normalization = 2.0
+                    idx = jnp.where(species == j, species_enum, max_species)
+                    mask_j = jnp.isin(neighbor.idx, idx) * mask
+                    mask_ij = (i == species)[:, None] * mask_j
+
+                    fn = partial(s, coefficients=_coefficients2[k])
+                    two_body_term += (
+                        util.high_precision_sum(fn(dr) * mask_ij) / normalization
+                    )
+
+                three_body_term = 0.0
+
+                for key, s in three_body_splines.items():
+                    i, j, k = key
+                    normalization = 1.0
+                    if j == k:
+                        normalization = 2.0
+
+                    imask = species == i
+                    idxj = jnp.where(species == j, species_enum, max_species)
+                    mask_j = jnp.isin(neighbor.idx, idxj) * mask
+                    idxk = jnp.where(species == k, species_enum, max_species)
+                    mask_k = jnp.isin(neighbor.idx, idxk) * mask
+                    mask_ijk = (
+                        imask[:, None, None] * mask_j[:, None, :] * mask_k[:, :, None]
+                    )
+
+                    fn = partial(s, coefficients3=_coefficients3[key])
+                    three_body_term += (
+                        util.high_precision_sum(fn(dR, dR) * mask_ijk) / normalization
+                    )
+
+            else:
+                raise NotImplementedError(
+                    "UF3 potential only implemented with Dense neighbor lists."
+                )
+            return two_body_term + three_body_term
 
     return neighbor_fn, energy_fn
 
@@ -310,7 +401,7 @@ def uf2_mapped(
     cutoff: float = 5.5,
     **kwargs
 ) -> Array:
-    fn = partial(uf2_interaction, coefficients=coefficients, knots=knots, cutoff=5.5)
+    fn = partial(uf2_interaction, coefficients=coefficients, knots=knots, cutoff=cutoff)
     return vmap(fn)(dr)
 
 
@@ -343,7 +434,14 @@ def uf3_interaction(
     spline2 = jit(partial(jsp.deBoor_factor_unsafe, k, knots[1]))
     spline3 = jit(partial(jsp.deBoor_factor_unsafe, k, knots[2]))
 
-    within_cutoff = (dr12 > min1) & (dr13 > min2) & (dr23 > min3)
+    within_cutoff = (
+        (dr12 > min1)
+        & (dr13 > min2)
+        & (dr23 > min3)
+        & (dr12 > 0.0)
+        & (dr13 > 0.0)
+        & (dr23 > 0.0)
+    )
     return jnp.where(
         within_cutoff,
         jnp.einsum(
