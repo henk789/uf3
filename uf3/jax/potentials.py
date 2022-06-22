@@ -380,7 +380,7 @@ def uf2_interaction(
 ) -> Array:
     k = 3
     mint = knots[k]
-    maxt = knots[-k+1]
+    maxt = knots[-k-1]
     within_cutoff = (dr > 0) & (dr >= mint) & (dr < maxt)
     dr = jnp.where(within_cutoff, dr, 0.0)
     spline = jit(vmap(partial(jsp.deBoor_factor_unsafe, k, knots)))
@@ -406,7 +406,7 @@ def uf3_interaction(
     knots: List[jnp.ndarray] = None,
 ) -> Array:
     k = 3
-    cutoff = knots[0][-k+1]
+    cutoff = knots[0][-k-1]
     # sane default value is now standard, due to featurization simplification in original uf3
     angular_cutoff = cutoff * 2
 
