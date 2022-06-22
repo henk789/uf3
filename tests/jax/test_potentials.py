@@ -35,13 +35,13 @@ def test_energy():
     rng.shuffle(species)
     species = jnp.asarray(species, dtype=jnp.int16)
 
-    knots = rng.standard_normal(17) * 5.5
+    knots = rng.uniform(0.0, 5.5, 17)
 
     knots = onp.sort(knots)
     knots[0] = 0
     knots = onp.pad(knots, (3,3), 'edge')
 
-    coefficients = rng.standard_normal(len(knots) - 7) * 2
+    coefficients = rng.standard_normal(len(knots) - 7) * 5
     coefficients = onp.pad(coefficients, (0,3))
 
     coefficients = jnp.asarray(coefficients)
