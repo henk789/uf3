@@ -99,7 +99,7 @@ def test_2_body_interaction_count():
 
     coefficients = jnp.ones(len(knots) - 4)
 
-    pair = uf2_pair(displacement, coefficients=coefficients, knots=knots, cutoff=box_size)
+    pair = uf2_pair(displacement, coefficients=coefficients, knots=knots)
     nf, ef = uf2_neighbor(displacement, box_size, coefficients=coefficients, knots=knots, cutoff=box_size)
 
     n_pairs = N*(N-1)/2
@@ -111,7 +111,7 @@ def test_2_body_interaction_count():
 
     knots3 = [knots,knots,knots]
     coefficients3 = jnp.zeros((len(coefficients),) * 3)
-    pair3 = uf3_pair(displacement, coefficients=coefficients, knots=knots, coefficients3=coefficients3, knots3=knots3, cutoff=box_size, cutoff3=box_size)
+    pair3 = uf3_pair(displacement, coefficients=coefficients, knots=knots, coefficients3=coefficients3, knots3=knots3)
 
     assert jnp.allclose(pair3(R), n_pairs)
 
@@ -145,7 +145,7 @@ def test_2_body_interaction_count():
     k3[(1,0,1)] = knots3
     k3[(1,1,1)] = knots3
 
-    nf, ef = uf3_neighbor(displacement, box_size, species=species, knots2=knot_dict, coefficients2=coeff_dict, knots3=k3, coefficients3=c3, cutoff=10.0)
+    nf, ef = uf3_neighbor(displacement, box_size, species=species, knots2=knot_dict, coefficients2=coeff_dict, knots3=k3, coefficients3=c3, cutoff=box_size)
     nbrs = nf.allocate(R)
 
     assert jnp.allclose(ef(R, nbrs), n_pairs)
@@ -182,11 +182,11 @@ def test_3_body_interaction_count():
 
     knots3 = [knots,knots,knots]
     coefficients3 = jnp.ones((len(coefficients),) * 3)
-    pair3 = uf3_pair(displacement, coefficients=coefficients, knots=knots, coefficients3=coefficients3, knots3=knots3, cutoff=box_size, cutoff3=box_size)
+    pair3 = uf3_pair(displacement, coefficients=coefficients, knots=knots, coefficients3=coefficients3, knots3=knots3)
 
     assert jnp.allclose(pair3(R), n_triplets)
 
-    nf, ef = uf3_neighbor(displacement, box_size, knots2=knots, coefficients2=coefficients, knots3=knots3, coefficients3=coefficients3, cutoff=10.0, cutoff3=10.0)
+    nf, ef = uf3_neighbor(displacement, box_size, knots2=knots, coefficients2=coefficients, knots3=knots3, coefficients3=coefficients3, cutoff=box_size)
     nbrs = nf.allocate(R)
 
     assert jnp.allclose(ef(R, nbrs), n_triplets)
@@ -217,7 +217,7 @@ def test_3_body_interaction_count():
     k3[(1,0,1)] = knots3
     k3[(1,1,1)] = knots3
 
-    nfs, efs = uf3_neighbor(displacement, box_size, species=species, knots2=knot_dict, coefficients2=coeff_dict, knots3=k3, coefficients3=c3, cutoff=10.0, cutoff3=10.0)
+    nfs, efs = uf3_neighbor(displacement, box_size, species=species, knots2=knot_dict, coefficients2=coeff_dict, knots3=k3, coefficients3=c3, cutoff=box_size)
     nbrss = nf.allocate(R)
 
     assert jnp.allclose(efs(R, nbrss), n_triplets)

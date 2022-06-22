@@ -117,7 +117,7 @@ def uf2_neighbor(
     )
 
     if species is None:
-        two_body_fn = partial(uf2_mapped, knots=knots, cutoff=cutoff)
+        two_body_fn = partial(uf2_mapped, knots=knots)
 
         def energy_fn(R, neighbor, **dynamic_kwargs):
 
@@ -147,7 +147,7 @@ def uf2_neighbor(
     else:
         two_body_splines = {}
         for k, v in knots.items():
-            two_body_splines[k] = partial(uf2_mapped, knots=v, cutoff=v[-3])
+            two_body_splines[k] = partial(uf2_mapped, knots=v)
 
         max_species = len(species)
         species_enum = jnp.arange(max_species)
@@ -226,8 +226,8 @@ def uf3_neighbor(
     )
 
     if species is None:
-        two_body_fn = partial(uf2_mapped, knots=knots2, cutoff=cutoff)
-        three_body_fn = partial(uf3_mapped, knots3=knots3, cutoff3=knots3[0][-3])
+        two_body_fn = partial(uf2_mapped, knots=knots2)
+        three_body_fn = partial(uf3_mapped, knots3=knots3)
 
         def energy_fn(R, neighbor, **dynamic_kwargs):
 
@@ -269,10 +269,10 @@ def uf3_neighbor(
     else:
         two_body_splines = {}
         for k, v in knots2.items():
-            two_body_splines[k] = partial(uf2_mapped, knots=v, cutoff=v[-3])
+            two_body_splines[k] = partial(uf2_mapped, knots=v)
         three_body_splines = {}
         for k, v in knots3.items():
-            three_body_splines[k] = partial(uf3_mapped, knots3=v, cutoff3=v[0][-3])
+            three_body_splines[k] = partial(uf3_mapped, knots3=v)
 
         max_species = len(species)
         species_enum = jnp.arange(max_species)
@@ -380,13 +380,12 @@ def uf2_interaction(
     dr: Array,
     coefficients: jnp.ndarray = None,
     knots: jnp.ndarray = None,
-    cutoff: float = 5.5,
 ) -> Array:
     k = 3
     mint = knots[k]
-    maxt = knots[-k]
+    maxt = knots[-k+1]
     # TODO lower cut_off might have to be modified or knots and coefficients have to be corespondingly set
-    within_cutoff = (dr > 0) & (dr < cutoff) & (dr >= mint) & (dr < maxt)
+    within_cutoff = (dr > 0) & (dr >= mint) & (dr < maxt)
     dr = jnp.where(within_cutoff, dr, 0.0)
     spline = jit(vmap(partial(jsp.deBoor_factor_unsafe, k, knots)))
     return jnp.where(
@@ -398,10 +397,9 @@ def uf2_mapped(
     dr: Array,
     coefficients: Array = None,
     knots: Array = None,
-    cutoff: float = 5.5,
     **kwargs
 ) -> Array:
-    fn = partial(uf2_interaction, coefficients=coefficients, knots=knots, cutoff=cutoff)
+    fn = partial(uf2_interaction, coefficients=coefficients, knots=knots)
     return vmap(fn)(dr)
 
 
@@ -410,12 +408,12 @@ def uf3_interaction(
     dR13: Array,
     coefficients: jnp.ndarray = None,
     knots: List[jnp.ndarray] = None,
-    cutoff: float = 3.0,
 ) -> Array:
     # sane default value is now standard, due to featurization simplification in original uf3
+    k = 3
+    cutoff = knots[0][-k+1]
     angular_cutoff = cutoff * 2
 
-    k = 3
     min1 = knots[0][k]
     min2 = knots[1][k]
     min3 = knots[2][k]
@@ -458,8 +456,8 @@ def uf3_interaction(
     )
 
 
-def uf3_mapped(dR12, dR13, coefficients3=None, knots3=None, cutoff3=3.5, **kwargs):
+def uf3_mapped(dR12, dR13, coefficients3=None, knots3=None, **kwargs):
     fn = partial(
-        uf3_interaction, coefficients=coefficients3, knots=knots3, cutoff=cutoff3
+        uf3_interaction, coefficients=coefficients3, knots=knots3
     )
     return vmap(vmap(vmap(fn, (0, None)), (None, 0)))(dR12, dR13)
