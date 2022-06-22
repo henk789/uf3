@@ -173,7 +173,7 @@ def deBoor_getBasis(k: int):
 
 def deBoor_basis_unsafe(k: int, knots: Array, x):
     """
-    Will silently return wrong values if knots[k] > x or knots[-k] < x
+    Will silently return wrong values if knots[k] > x or knots[-k-1] <= x
     """
 
     i = jnp.argmax(knots > x)
@@ -217,6 +217,7 @@ def deBoor_basis_unsafe(k: int, knots: Array, x):
     return (i - k - 1, out[: k + 1])
 
 
+@partial(jit, static_argnames=['k'])
 def deBoor_factor_unsafe(k: int, knots: Array, x):
     i, r = deBoor_basis_unsafe(k, knots, x)
     max = len(knots) - k - 1
