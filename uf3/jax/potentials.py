@@ -62,7 +62,7 @@ def uf3_pair(
     **kwargs
 ) -> Callable[[Array], Array]:
     """
-    #TODO test
+    #TODO
     """
 
     def compute_fn(R, **dynamic_kwargs):
@@ -238,9 +238,6 @@ def uf3_neighbor(
 
             d = partial(displacement, **_kwargs)
             mask = partition.neighbor_list_mask(neighbor)
-            # diag = jnp.diag(jnp.ones(neighbor.idx.shape[1]))
-            # diag_mask = diag == 0
-            # mask_ijk = jnp.logical_and(diag_mask[None,:,:], mask[:,None,:] * mask[:,:,None])
             mask_ijk = mask[:, None, :] * mask[:, :, None]
 
             if neighbor.format is partition.Dense:
@@ -384,7 +381,6 @@ def uf2_interaction(
     k = 3
     mint = knots[k]
     maxt = knots[-k+1]
-    # TODO lower cut_off might have to be modified or knots and coefficients have to be corespondingly set
     within_cutoff = (dr > 0) & (dr >= mint) & (dr < maxt)
     dr = jnp.where(within_cutoff, dr, 0.0)
     spline = jit(vmap(partial(jsp.deBoor_factor_unsafe, k, knots)))
@@ -409,9 +405,9 @@ def uf3_interaction(
     coefficients: jnp.ndarray = None,
     knots: List[jnp.ndarray] = None,
 ) -> Array:
-    # sane default value is now standard, due to featurization simplification in original uf3
     k = 3
     cutoff = knots[0][-k+1]
+    # sane default value is now standard, due to featurization simplification in original uf3
     angular_cutoff = cutoff * 2
 
     min1 = knots[0][k]
