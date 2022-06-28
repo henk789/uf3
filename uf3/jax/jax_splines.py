@@ -1,5 +1,4 @@
 from argparse import ArgumentError
-from math import degrees
 from typing import List, Tuple, Union
 import jax.numpy as jnp
 import numpy as onp
@@ -10,46 +9,7 @@ from functools import partial
 
 Array = jnp.ndarray
 
-
-def _check_inputs(
-    knots: Union[Array, List[Array]],
-    degrees: Union[int, Tuple[int]],
-    coefficients: Array = None,
-):
-    if not isinstance(knots, List):
-        knots = [knots]
-
-    if isinstance(degrees, int):
-        if len(degrees) == 1:
-            degrees = (degrees,) * len(knots)
-        elif len(knots) != len(degrees):
-            raise ArgumentError(
-                "There has to be one degree per knot sequence or only one degree that will be applied to all dimensions."
-            )
-
-    for d, k in zip(degrees, knots):
-        if len(k) < 2 * d:
-            raise ArgumentError(
-                "There have to be atleast 2 * degree knots in each dimension."
-            )
-
-    if coefficients is not None:
-        shape = coefficients.shape
-        if len(shape) != len(degrees):
-            raise ArgumentError(
-                "The coefficient array has to have the same dimensions as the spline."
-            )
-        correct_shape = []
-        for d, k in zip(degrees, knots):
-            correct_shape.append(len(k) + d + 1)
-        correct_shape = tuple(correct_shape)
-        if correct_shape != shape:
-            raise ArgumentError(
-                "There have to be num_of_knots + degree + 1 coefficients in each dimension. The shape has to be"
-                + correct_shape
-            )
-
-    return (coefficients, knots, degrees)
+from uf3.util import jax_utils
 
 
 def ndSpline(
@@ -57,7 +17,9 @@ def ndSpline(
     knots: Union[Array, List[Array]],
     degrees: Union[int, Tuple[int]],
 ):
-    return _ndSpline_unsafe(*_check_inputs(knots, degrees, coefficients))
+    coefficients, knots, degrees = jax_utils.check_inputs(knots, degrees, coefficients, padding=True)
+
+    return _ndSpline_unsafe(coefficients, knots, degrees)
 
 
 def _ndSpline_unsafe(coefficients: Array, knots: List[Array], degrees: Tuple[int]):
@@ -67,26 +29,18 @@ def _ndSpline_unsafe(coefficients: Array, knots: List[Array], degrees: Tuple[int
     if len(degrees) == 3:
         return spline_3d(coefficients, knots, degrees)
 
-    raise NotImplementedError("Arbitrary ND Splines are not supported at the moment.")
-
+    # raise NotImplementedError("Arbitrary ND Splines are not supported at the moment.")
     min = []
     max = []
-    padding = []
+    min = jnp.asarray(min)
+    max = jnp.asarray(max)
     s = []
     for t, k in zip(knots, degrees):
         min.append(t[0])
         max.append(t[-1])
-        t = jnp.pad(t, (k, k), "edge")
-        padding.append((k, k))
         s.append(
             jit(vmap(partial(deBoor_basis_unsafe, k, t)))
         )  # TODO benchmark with and without this jit
-
-    min = jnp.asarray(min)
-    max = jnp.asarray(max)
-
-    padding = tuple(padding)
-    c = jnp.pad(coefficients, padding)
 
     x_dim = len(degrees)
 
@@ -176,7 +130,7 @@ def deBoor_basis_unsafe(k: int, knots: Array, x):
     Will silently return wrong values if knots[k] > x or knots[-k-1] <= x
     """
 
-    i = jnp.argmax(knots > x)
+    i = jnp.searchsorted(knots, x, side='right')
     t = dynamic_slice(knots, (i - k,), (2 * k,))
 
     f = lambda c, a: (None, dynamic_slice(t, (a,), (k,)))
@@ -241,3 +195,42 @@ def deBoor_basis_reference(knots: onp.ndarray, deg: int, x):
 
     return f(x, 0, deg)
 
+def symbolic_basis_unsafe(knots: Array, x):
+    """
+    Will silently return wrong values if knots[3] > x or knots[-4] <= x
+    """
+    k = 3
+
+    i = jnp.searchsorted(knots, x, side='right')
+    t = dynamic_slice(knots, (i - k,), (2 * k,))
+    out = jnp.zeros(k+1)
+
+    t32 = t[3] - t[2]
+    B11 = (t[3] - x) / t32
+    B21 = (x - t[2]) / t32
+
+    t31 = t[3] - t[1]
+    t42 = t[4] - t[2]
+    B02 = ((t[3] - x) / t31) * B11
+    B12 = ((x - t[1]) / t31) * B11 + ((t[4] - x) / t42) * B21
+    B22 = ((x - t[2]) / (t[4] - t[2])) * B21
+
+    t30 = t[3] - t[0]
+    t41 = t[4] - t[1]
+    t52 = t[5] - t[2]
+    out = out.at[0].set(((t[3] - x) / t30) * B02)
+    out = out.at[1].set(((x - t[0]) / t30) * B02 + ((t[4] - x) / t41) * B12)
+    out = out.at[2].set(((x - t[1]) / t41) * B12 + ((t[5] - x) / t52) * B22)
+    out = out.at[3].set(((x - t[2]) / t52) * B22)
+
+    return (i - k - 1, out)
+
+
+@jit
+def symbolic_factor_unsafe(knots: Array, x):
+    k = 3
+    i, r = symbolic_basis_unsafe(knots, x)
+    max = len(knots) - k - 1
+    res = jnp.zeros(max)
+    res = dynamic_update_slice(res, r, (i,))
+    return res
