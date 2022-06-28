@@ -43,22 +43,58 @@ def test_deBoor_factor():
 
     xs = rng.uniform(0.0, knots[-1], n_xs)
 
-    res = vmap(deBoor_factor_unsafe, (None,None,0))(3, knots, xs)
+    res = vmap(deBoor_factor_unsafe, (None,None,0))(k, knots, xs)
+
+    assert jnp.allclose(jnp.sum(res, 1), jnp.ones(n_xs))
+
+    assert len(res[res != 0.0]) == n_xs * (k+1)
+
+    a = deBoor_factor_unsafe(k, knots, knots[k])
+
+    assert a[0] == 1.0
+
+    b = deBoor_factor_unsafe(k, knots, knots[-k-1]-0.000000001)
+
+    assert jnp.allclose(jnp.sum(b[-k-1:]), 1.0)
+
+    c = vmap(deBoor_factor_unsafe, (None,None,0))(k, knots, knots[k+1:-k-1])
+
+    assert len(c[c != 0.0]) == len(knots[k+1:-k-1]) * k
+
+
+def test_symbolic_factor():
+    rng = onp.random.default_rng()
+    seed = rng.integers(0,999)
+    print(f"Seed for energy test: {seed}")
+    rng = onp.random.default_rng(seed)
+
+    n_xs = 100
+    k=3
+
+    knots = rng.uniform(0.0, 11, 50)
+
+    knots = onp.sort(knots)
+    knots[0] = 0
+    knots = onp.pad(knots, (3,3), 'edge')
+
+    knots = jnp.asarray(knots)
+
+    xs = rng.uniform(0.0, knots[-1], n_xs)
+
+    res = vmap(symbolic_factor_unsafe, (None,0))(knots, xs)
 
     assert jnp.allclose(jnp.sum(res, 1), jnp.ones(n_xs))
 
     assert len(res[res != 0.0]) == n_xs * 4
 
-    a = deBoor_factor_unsafe(3, knots, knots[k])
+    a = symbolic_factor_unsafe(knots, knots[k])
 
     assert a[0] == 1.0
 
-    b = deBoor_factor_unsafe(3, knots, knots[-k-1]-0.000000001)
+    b = symbolic_factor_unsafe(knots, knots[-k-1]-0.000000001)
 
     assert jnp.allclose(jnp.sum(b[-k-1:]), 1.0)
 
-    c = vmap(deBoor_factor_unsafe, (None,None,0))(3, knots, knots[k+1:-k-1])
+    c = vmap(symbolic_factor_unsafe, (None,0))(knots, knots[k+1:-k-1])
 
     assert len(c[c != 0.0]) == len(knots[k+1:-k-1]) * 3
-
-
