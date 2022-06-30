@@ -31,8 +31,9 @@ def ndSpline(
     Generates a spline function to evaluate the spline on given x.
     For more flexibility see: _ndSpline_unsafe
 
-    The generated N-dimensional spline function takes N arguments of arrays
-    with shape (n,) for n inputs.
+    The generated N-dimensional spline function takes an array with shape (d,) for d dimensions.
+    Use with vmap and inputs being of shape (N,d) N points to evaluate.
+    Use grad(spline) to compute gradients and vmap(grad(spline)) for multiple inputs.
 
     Args:
         coefficients: A jax.ndarray of shape (len(knots[i]) - degrees[i] - 1, ...)
@@ -54,23 +55,19 @@ def ndSpline(
         coefficients, _knots, degrees, backend=backend, featurization=False
     )
 
-    def fn(*xs):
+    def fn(x):
         # check number of arguments
-        if len(xs) != dimensions:
+        if len(x) != dimensions:
             raise ArgumentError(
-                f"This spline has dimension {dimensions}, but {len(xs)} arguments were given."
+                f"This spline has dimension {dimensions}, but x has dimension {len(x)}."
             )
 
-        # return 0 for x outside range and check if for each dimension the same number of inputs is given
-        mask = jnp.ones_like(xs[0], dtype=bool)
-        n_x = len(xs[0])
+        # return 0 for x outside range
+        mask = True
+        n_x = len(x[0])
         for i in range(dimensions):
-            if n_x != xs[i]:
-                raise ArgumentError(
-                    "Each dimension of the input has to be the same length."
-                )
-            mask = mask & (knots[i][0] <= xs[i]) & (knots[i][-1] > xs[i])
-        return spline(*xs) * mask
+            mask = mask and (knots[i][0] <= x[i]) and (knots[i][-1] > x[i])
+        return spline(x) * mask
 
 
 def _ndSpline_unsafe(
@@ -85,11 +82,11 @@ def _ndSpline_unsafe(
     The generated function can take a coefficients keyword argument,
     all other parameters are fixed.
 
-    The generated N-dimensional spline function takes N arguments of arrays
-    with shape (n,) for n inputs.
-    Or use with vmap and inputs being of shape (N,1) for each axis.
+    The generated N-dimensional spline function takes an array with shape (d,) for d dimensions.
+    Use with vmap and inputs being of shape (N,d) N points to evaluate.
+    Use grad(spline) to compute gradients and vmap(grad(spline)) for multiple inputs.
 
-    If featurization is True vmap has to be used and inputs thus shaped (N,1)
+    If featurization is True grad can not be used.
 
     Args:
         coefficients: A jax.ndarray of shape (len(knots[i]) - degrees[i] - 1, ...)
@@ -104,7 +101,7 @@ def _ndSpline_unsafe(
             or return an array of coefficients.shape with the contribution of each B-spline.
             Note that if set to True, vmap has to be used.
     """
-    if k != 3:
+    if not jnp.all(jnp.asarray(degrees) == 3):
         backend = BSplineBackend.DeBoor
         warnings.warn(
             "The symbolic backend is only available for k=3. Changed to DeBoor."
@@ -116,34 +113,27 @@ def _ndSpline_unsafe(
     for t, k in zip(knots, degrees):
         min.append(t[0])
         max.append(t[-1])
-        s.append(vmap(partial(bspline_factors, t, k=k, basis=backend)))
+        s.append(partial(bspline_factors, t, k=k, basis=backend))
 
     min = jnp.asarray(min)
     max = jnp.asarray(max)
     x_dim = len(knots)
 
     indices = list(range(1, x_dim + 1))
-    selector = [[0, i] for i in indices]
+    selector = [[i] for i in indices]
 
     if featurization:
         out = list(range(1, x_dim + 1))
     else:
-        out = [0]
+        out = []
 
     @jit
-    def spline_fn(*xs, coefficients=coefficients):
-        """
-        Use as is with inputs being arrays for each axis
-
-        Use with vmap and inputs being of shape (N,1) for each axis.
-
-        If featurization is True vmap has to be used and inputs thus shaped (N,1)
-        """
+    def spline_fn(x, coefficients=coefficients):
         data = []
         in_cutoff = True
         for i in range(x_dim):
-            data.append(s[i](xs[i]))
-            in_cutoff = (xs[i] >= min[i]) & (xs[i] < max[i]) & in_cutoff
+            data.append(s[i](x[i]))
+            in_cutoff = (x[i] >= min[i]) & (x[i] < max[i]) & in_cutoff
 
         # jnp.einsum(coefficients, *results of basis splines and axis, coefficient axis for featurization)
         # jnp.einsum(coefficients, [0,1,2], A, [0], B, [1], C, [2])
