@@ -4,6 +4,7 @@ import jax.numpy as jnp
 
 from argparse import ArgumentError
 from typing import List, Tuple, Union
+
 Array = jnp.ndarray
 
 from uf3.data import geometry
@@ -24,7 +25,7 @@ def scale_atoms(atoms, cutoff):
         pos = new_pos
         an = new_an
 
-    new_cell = fact[:,None] * atoms.cell
+    new_cell = fact[:, None] * atoms.cell
     return ase.Atoms(an, positions=pos, cell=new_cell, pbc=atoms.pbc)
 
 
@@ -32,11 +33,9 @@ def check_inputs(
     knots: Union[Array, List[Array]],
     degrees: Union[int, Tuple[int]],
     coefficients: Array = None,
-    padding=True
+    padding=True,
 ):
-    '''
-    #TODO add padding if unsafe
-    '''
+
     if not isinstance(knots, List):
         knots = [knots]
 
@@ -69,8 +68,18 @@ def check_inputs(
                 "There have to be num_of_knots + degree + 1 coefficients in each dimension. The shape has to be"
                 + correct_shape
             )
-    
-    #TODO check and rework
+
+    if padding:
+        coefficients, knots = add_padding(coefficients, knots, degrees)
+
+    return (coefficients, knots, degrees)
+
+
+def add_padding(coefficients, knots, degrees):
+    """
+    Adds padding where necessary for safe use with jax_splines on the whole range of the original knots.
+    """
+    # TODO only add padding if necessary instead of always
     padding = []
     knot = []
     for t, k in zip(knots, degrees):
@@ -81,4 +90,4 @@ def check_inputs(
     padding = tuple(padding)
     c = jnp.pad(coefficients, padding)
 
-    return (coefficients, knots, degrees)
+    return c, knot
