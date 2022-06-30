@@ -178,10 +178,8 @@ def bspline_factors(knots: Array, x, k=3, basis=BSplineBackend.Symbolic, safe=Fa
     if basis is BSplineBackend.DeBoor:
         r = deBoor_basis(k, t, x)
 
-    if safe:
-        return dynamic_update_slice(res, r, (i - k - 1,))
-    else:
-        return dynamic_update_slice(res, r, (i,))
+    return dynamic_update_slice(res, r, (i - k - 1,))
+    
 
 
 def deBoor_basis(k: int, t: Array, x):
