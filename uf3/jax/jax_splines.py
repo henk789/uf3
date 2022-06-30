@@ -1,9 +1,8 @@
 from argparse import ArgumentError
 from typing import List, Tuple, Union
 import jax.numpy as jnp
-import numpy as onp
-from jax.lax import dynamic_slice, scan, map, dynamic_update_slice
-from jax import vmap, jit
+from jax.lax import dynamic_slice, scan, dynamic_update_slice
+from jax import jit
 
 from functools import partial
 
@@ -256,13 +255,11 @@ def symbolic_basis(t: Array, x):
 
     return out
 
-    # def deBoor_basis_reference(knots: onp.ndarray, k: int, x):
-    """
-    B-splines evaluation with the recursive form.
-    Left here only for reference.
-    """
-
-
+# def deBoor_basis_reference(knots, k: int, x):
+#     """
+#     B-splines evaluation with the recursive form.
+#     Left here only for reference.
+#     """
 #     def f(x, i, k):
 #         if k == 0:
 #             if knots[i] <= x and x < knots[i + 1]:
