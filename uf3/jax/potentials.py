@@ -260,7 +260,7 @@ def uf3_neighbor(
                 raise NotImplementedError(
                     "UF3 potential only implemented with Dense neighbor lists."
                 )
-            print(three_body_term)
+            # print(three_body_term)
             return two_body_term + three_body_term
 
     else:
@@ -373,6 +373,7 @@ def get_stress_fn(energy_fn, box):
     return lambda R: stress_fn(R, deformation)
 
 
+@jit
 def uf2_interaction(
     dr: Array,
     coefficients: jnp.ndarray = None,
@@ -383,12 +384,13 @@ def uf2_interaction(
     maxt = knots[-k-1]
     within_cutoff = (dr > 0) & (dr >= mint) & (dr < maxt)
     dr = jnp.where(within_cutoff, dr, 0.0)
-    spline = jit(vmap(partial(jsp.deBoor_factor_unsafe, k, knots)))
+    spline = vmap(partial(jsp.bspline_factors, knots))
     return jnp.where(
         within_cutoff, jnp.sum(coefficients * spline(dr), 1), 0.0
     )  # TODO check performance vs einsum
 
 
+@jit
 def uf2_mapped(
     dr: Array,
     coefficients: Array = None,
@@ -399,6 +401,7 @@ def uf2_mapped(
     return vmap(fn)(dr)
 
 
+@jit
 def uf3_interaction(
     dR12: Array,
     dR13: Array,
@@ -413,6 +416,10 @@ def uf3_interaction(
     min1 = knots[0][k]
     min2 = knots[1][k]
     min3 = knots[2][k]
+    max1 = knots[0][-k-1]
+    max2 = knots[1][-k-1]
+    max3 = knots[2][-k-1]
+
 
     dR23 = dR13 - dR12
     dr12 = space.distance(dR12)
@@ -423,15 +430,18 @@ def uf3_interaction(
     dr23 = jnp.where(dr23 < angular_cutoff, dr23, 0)
 
     # 3-D Spline
-    k = 3
-    spline1 = jit(partial(jsp.deBoor_factor_unsafe, k, knots[0]))
-    spline2 = jit(partial(jsp.deBoor_factor_unsafe, k, knots[1]))
-    spline3 = jit(partial(jsp.deBoor_factor_unsafe, k, knots[2]))
+    # k = 3
+    spline1 = partial(jsp.bspline_factors, knots[0])
+    spline2 = partial(jsp.bspline_factors, knots[1])
+    spline3 = partial(jsp.bspline_factors, knots[2])
 
     within_cutoff = (
-        (dr12 > min1)
-        & (dr13 > min2)
-        & (dr23 > min3)
+        (dr12 >= min1)
+        & (dr13 >= min2)
+        & (dr23 >= min3)
+        & (dr12 < max1)
+        & (dr13 < max2)
+        & (dr23 < max3)
         & (dr12 > 0.0)
         & (dr13 > 0.0)
         & (dr23 > 0.0)
@@ -452,6 +462,7 @@ def uf3_interaction(
     )
 
 
+@jit
 def uf3_mapped(dR12, dR13, coefficients3=None, knots3=None, **kwargs):
     fn = partial(
         uf3_interaction, coefficients=coefficients3, knots=knots3
