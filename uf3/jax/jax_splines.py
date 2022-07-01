@@ -50,7 +50,7 @@ def ndSpline(
         knots, degrees, coefficients, padding=True
     )
     dimensions = len(degrees)
-    spline = _ndSpline_unsafe(
+    spline = ndSpline_unsafe(
         coefficients, _knots, degrees, backend=backend, featurization=False
     )
 
@@ -69,7 +69,7 @@ def ndSpline(
         return spline(x) * mask
 
 
-def _ndSpline_unsafe(
+def ndSpline_unsafe(
     coefficients: Array,
     knots: List[Array],
     degrees: Tuple[int],
