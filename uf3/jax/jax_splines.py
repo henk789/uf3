@@ -74,6 +74,7 @@ def ndSpline_unsafe(
     knots: List[Array],
     degrees: Tuple[int],
     backend=BSplineBackend.Symbolic,
+    naive_search=False,
     featurization=False,
 ):
     """
@@ -100,7 +101,7 @@ def ndSpline_unsafe(
             or return an array of coefficients.shape with the contribution of each B-spline.
             Note that if set to True, vmap has to be used.
     """
-    if not jnp.all(jnp.asarray(degrees) == 3):
+    if not jnp.all(jnp.asarray(degrees) == 3) and backend==BSplineBackend.Symbolic:
         backend = BSplineBackend.DeBoor
         warnings.warn(
             "The symbolic backend is only available for k=3. Changed to DeBoor."
@@ -112,7 +113,7 @@ def ndSpline_unsafe(
     for t, k in zip(knots, degrees):
         min.append(t[0])
         max.append(t[-1])
-        s.append(partial(bspline_factors, t, k=k, basis=backend))
+        s.append(partial(bspline_factors, t, k=k, basis=backend, naive_search=naive_search))
 
     min = jnp.asarray(min)
     max = jnp.asarray(max)
@@ -142,8 +143,10 @@ def ndSpline_unsafe(
     return spline_fn
 
 
-@partial(jit, static_argnames=["k", "basis", "safe"])
-def bspline_factors(knots: Array, x, k=3, basis=BSplineBackend.Symbolic, safe=False):
+@partial(jit, static_argnames=["k", "basis", "safe", "naive_search"])
+def bspline_factors(
+    knots: Array, x, k=3, basis=BSplineBackend.Symbolic, safe=False, naive_search=False
+):
     """
     safe = False -> Will silently return wrong values if knots[k] > x or knots[-k-1] <= x
 
@@ -151,7 +154,11 @@ def bspline_factors(knots: Array, x, k=3, basis=BSplineBackend.Symbolic, safe=Fa
     in inefficient padding. You should apply padding in advance if necessary.
     See: uf3.utils.jax_utils.add_padding
     """
-    i = jnp.searchsorted(knots, x, side="right")
+    if naive_search:
+        i = jnp.argmax(knots > x, 0)
+    else:
+        i = jnp.searchsorted(knots, x, side="right")
+
     if safe:
         t = dynamic_slice(jnp.pad(knots, (k, k), "edge"), (i,), (2 * k,))
     else:
@@ -168,7 +175,6 @@ def bspline_factors(knots: Array, x, k=3, basis=BSplineBackend.Symbolic, safe=Fa
         r = deBoor_basis(k, t, x)
 
     return dynamic_update_slice(res, r, (i - k - 1,))
-    
 
 
 def deBoor_basis(k: int, t: Array, x):
@@ -254,6 +260,7 @@ def symbolic_basis(t: Array, x):
     out = out.at[3].set(B23)
 
     return out
+
 
 # def deBoor_basis_reference(knots, k: int, x):
 #     """
