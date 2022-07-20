@@ -2,6 +2,8 @@ from argparse import ArgumentError
 import numpy as onp
 import jax.numpy as jnp
 
+from ase import Atoms
+
 """Utility functions to create random splines, potentials and atomic systems"""
 
 
@@ -68,5 +70,19 @@ def random_spline(resolution, min=0, max=10, sample=None, degrees=None, seed=Non
     return (coefficients, knots, sample)
 
 
-def random_system(cell, N, seed=123):
-    pass
+def random_system(cell_size, size, n_trajectories, atom='W', seed=123):
+
+
+    if seed is None:
+        rng = onp.random.default_rng()
+        seed = rng.integers(0, 999)
+    rng = onp.random.default_rng(seed)
+
+    positions = onp.zeros((n_trajectories, size, 3))
+    atoms = []
+
+    for i in range(n_trajectories):
+        positions[i,:,:] = rng.uniform(0.0, cell_size, size=(size,3))
+        atoms.append(Atoms(atom+str(size), positions=positions[i,:,:], cell=[cell_size]*3, pbc=True))
+    
+    return positions, atoms
