@@ -136,157 +136,18 @@ def uf3_neighbor(
             `energy_fn` can take a keyword argument `species` where the species can be set for new inputs.
     """
 
-    if len(knots) == 1:
-        return _uf2_neighbor(
-            displacement,
-            box_size,
-            knots,
-            coefficients,
-            species,
-            cutoff,
-            dr_threshold,
-            format,
-            featurization,
-            *kwargs
-        )
-
-    if len(knots) == 2:
-        return _uf3_neighbor(
-            displacement,
-            box_size,
-            knots,
-            coefficients,
-            species,
-            cutoff,
-            dr_threshold,
-            format,
-            **kwargs
-        )
-
-
-def _uf2_neighbor(
-    displacement,
-    box_size,
-    knots,
-    coefficients=None,
-    species=None,
-    cutoff=5.5,
-    dr_threshold: float = 0.5,
-    format: NeighborListFormat = partition.Dense,
-    featurization=False,
-    **kwargs
-):
-    """
-    Supports only dense neighbor lists.
-
-    2-body neighbor list potential.
-    coefficients, knots need to be supplied to uf2_neighbor
-    More user friendly way is in the works.
-
-    For usage see the example notebooks here or in the JAX MD package
-
-    if species are None then knots and coefficients shoud be Arrays
-
-    if species is specified then knots and coefficients need to be dicts
-    with the arrays for the interactions given as tuples (i,j) where i,j are ints for the species
-    """
-
-    r_cutoff = jnp.array(cutoff, jnp.float32)
-    dr_threshold = jnp.float32(dr_threshold)
-
-    neighbor_fn = partition.neighbor_list(
-        displacement, box_size, r_cutoff, dr_threshold, format=format, **kwargs
+    return _uf3_neighbor(
+        displacement,
+        box_size,
+        knots,
+        coefficients,
+        species,
+        cutoff,
+        dr_threshold,
+        format,
+        featurization,
+        **kwargs
     )
-
-    if format is not partition.Dense:
-        raise NotImplementedError(
-            "UF 2-body potential only implemented with Dense neighbor lists."
-        )
-
-    if species is None:
-        two_body_fn = uf2_mapped(knots[0], featurization=featurization)
-
-        def energy_fn(R, neighbor, **dynamic_kwargs):
-
-            _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
-            d = partial(displacement, **_kwargs)
-            mask = partition.neighbor_list_mask(neighbor)
-
-            dR = space.map_neighbor(d)(R, R[neighbor.idx])
-            dr = space.distance(dR)
-
-            _coefficients = dynamic_kwargs.get("coefficients", coefficients)
-
-            if len(_coefficients) == 1:
-                coefficients_two_body = _coefficients[0]
-                one_body_term = 0.0
-            else:
-                coefficients_two_body = _coefficients[1]
-                one_body_term = _coefficients[0] * len(R)
-
-            if not featurization:
-                two_body_term = (
-                    util.high_precision_sum(
-                        two_body_fn(dr, coefficients=coefficients_two_body) * mask
-                    )
-                    / 2.0
-                )
-
-                return one_body_term + two_body_term
-            else:
-                two_body_term = util.high_precision_sum(
-                    two_body_fn(dr, coefficients=coefficients_two_body)
-                    * mask[:, :, None],
-                    1,
-                )
-                return two_body_term
-
-    else:
-        two_body_fns = {}
-        for k, v in knots[0].items():
-            two_body_fns[k] = uf2_mapped(v)
-
-        max_species = len(species)
-        species_enum = jnp.arange(max_species)
-
-        def energy_fn(R, neighbor, **dynamic_kwargs):
-            _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
-            d = partial(displacement, **_kwargs)
-
-            _coefficients = dynamic_kwargs.get("coefficients", coefficients)
-
-            dR = space.map_neighbor(d)(R, R[neighbor.idx])
-            dr = space.distance(dR)
-
-            two_body_term = 0.0
-
-            if len(_coefficients) == 1:
-                coefficients_two_body = _coefficients[0]
-                one_body_term = 0.0
-            else:
-                coefficients_two_body = _coefficients[1]
-                one_body_term = util.high_precision_sum(_coefficients[0][species])
-
-            mask = neighbor.idx < max_species
-
-            for k, fn in two_body_fns.items():
-                i, j = k
-                normalization = 1.0
-                if i == j:
-                    normalization = 2.0
-                idx = jnp.where(species == j, species_enum, max_species)
-                mask_j = jnp.isin(neighbor.idx, idx) * mask
-                mask_ij = (i == species)[:, None] * mask_j
-
-                c = coefficients_two_body[k]
-                two_body_term += (
-                    util.high_precision_sum(fn(dr, coefficients=c) * mask_ij)
-                    / normalization
-                )
-
-            return one_body_term + two_body_term
-
-    return neighbor_fn, energy_fn
 
 
 def _uf3_neighbor(
@@ -298,6 +159,7 @@ def _uf3_neighbor(
     cutoff=5.5,
     dr_threshold: float = 0.5,
     format: NeighborListFormat = partition.Dense,
+    featurization=False,
     **kwargs
 ):
     r_cutoff = jnp.array(cutoff, jnp.float32)
@@ -313,8 +175,16 @@ def _uf3_neighbor(
     )
 
     if species is None:
-        two_body_fn = uf2_mapped(knots[0])
-        three_body_fn = uf3_mapped(knots[1])
+        two_body_fn = uf2_mapped(knots[0], featurization=featurization)
+        if len(knots) == 1:
+            three_body_fn = None
+        elif len(knots) == 2:
+            three_body_fn = uf3_mapped(knots[1], featurization=featurization)
+        else:
+            raise ValueError(
+                "Knots has to be a list of lists of knots for either, 2-body terms only, ",
+                "or both  2 and 3 body terms.",
+            )
 
         def energy_fn(R, neighbor, **dynamic_kwargs):
 
@@ -322,51 +192,84 @@ def _uf3_neighbor(
 
             _coefficients = dynamic_kwargs.get("coefficients", coefficients)
 
-            if len(_coefficients) == 2:
+            if len(_coefficients) == 1:
+                one_body_term = 0.0
+                coefficients_two_body = _coefficients[0]
+            elif len(_coefficients) == 2 and three_body_fn is None:
+                one_body_term = _coefficients[0] * len(R)
+                coefficients_two_body = _coefficients[1]
+            elif len(_coefficients) == 2:
+                one_body_term = 0.0
                 coefficients_two_body = _coefficients[0]
                 coefficients_three_body = _coefficients[1]
-                one_body_term = 0.0
             else:
+                one_body_term = _coefficients[0] * len(R)
                 coefficients_two_body = _coefficients[1]
                 coefficients_three_body = _coefficients[2]
-                one_body_term = _coefficients[0] * len(R)
 
             d = partial(displacement, **_kwargs)
             mask = partition.neighbor_list_mask(neighbor)
-            mask_ijk = mask[:, None, :] * mask[:, :, None]
 
             dR = space.map_neighbor(d)(R, R[neighbor.idx])
             dr = space.distance(dR)
 
-            two_body_term = (
-                util.high_precision_sum(
-                    two_body_fn(dr, coefficients=coefficients_two_body) * mask
+            if not featurization:
+                two_body_term = (
+                    util.high_precision_sum(
+                        two_body_fn(dr, coefficients=coefficients_two_body) * mask
+                    )
+                    / 2.0
                 )
-                / 2.0
-            )
 
-            three_body_term = (
-                util.high_precision_sum(
-                    three_body_fn(dR, dR, coefficients=coefficients_three_body)
-                    * mask_ijk
+                if three_body_fn is not None:
+                    mask_ijk = mask[:, None, :] * mask[:, :, None]
+                    three_body_term = (
+                        util.high_precision_sum(
+                            three_body_fn(dR, dR, coefficients=coefficients_three_body)
+                            * mask_ijk
+                        )
+                    ) / 2.0
+                else:
+                    three_body_term = 0.0
+
+                return one_body_term + two_body_term + three_body_term
+            else:
+                two_body_term = util.high_precision_sum(
+                    two_body_fn(dr, coefficients=coefficients_two_body)
+                    * mask[:, :, None],
+                    1,
                 )
-            ) / 2.0
 
-            return one_body_term + two_body_term + three_body_term
+                if three_body_fn is not None:
+                    mask_ijk = mask[:, None, :] * mask[:, :, None]
+                    three_body_term = util.high_precision_sum(
+                        three_body_fn(dR, dR, coefficients=coefficients_three_body)
+                        * mask_ijk[:, :, :, None, None, None],
+                        (1, 2),
+                    )
+
+                    return two_body_term, three_body_term
+
+                return two_body_term
 
     else:
         two_body_fns = {}
         for k, v in knots[0].items():
             two_body_fns[k] = uf2_mapped(v)
-        three_body_fns = {}
-        for k, v in knots[1].items():
-            three_body_fns[k] = uf3_mapped(v)
+        if len(knots) == 1:
+            three_body_fns = None
+        elif len(knots) == 2:
+            three_body_fns = {}
+            for k, v in knots[1].items():
+                three_body_fns[k] = uf3_mapped(v)
+        else:
+            raise ValueError(
+                "Knots has to be a list of dictionaries for either, 2-body terms only, ",
+                "or both 2 and 3 body terms.",
+            )
 
         max_species = len(species)
         species_enum = jnp.arange(max_species)
-
-        if coefficients is None:
-            coefficients = [{}, {}]
 
         def energy_fn(R, neighbor, **dynamic_kwargs):
             _kwargs = util.merge_dicts(kwargs, dynamic_kwargs)
@@ -374,19 +277,29 @@ def _uf3_neighbor(
 
             _coefficients = dynamic_kwargs.get("coefficients", coefficients)
 
-            if len(_coefficients) == 2:
+            if len(_coefficients) == 1:
+                one_body_term = 0.0
+                coefficients_two_body = _coefficients[0]
+            elif len(_coefficients) == 2 and three_body_fns is None:
+                one_body_term = util.high_precision_sum(_coefficients[0][species])
+                coefficients_two_body = _coefficients[1]
+            elif len(_coefficients) == 2:
+                one_body_term = 0.0
                 coefficients_two_body = _coefficients[0]
                 coefficients_three_body = _coefficients[1]
-                one_body_term = 0.0
             else:
+                one_body_term = util.high_precision_sum(_coefficients[0][species])
                 coefficients_two_body = _coefficients[1]
                 coefficients_three_body = _coefficients[2]
-                one_body_term = util.high_precision_sum(_coefficients[0][species])
 
             dR = space.map_neighbor(d)(R, R[neighbor.idx])
             dr = space.distance(dR)
 
             two_body_term = 0.0
+            three_body_term = 0.0
+            if featurization:
+                two_body_term = {}
+                three_body_term = {}
 
             mask = neighbor.idx < len(neighbor.idx)
 
@@ -400,35 +313,53 @@ def _uf3_neighbor(
                 mask_ij = (i == species)[:, None] * mask_j
 
                 c = coefficients_two_body[k]
-                two_body_term += (
-                    util.high_precision_sum(fn(dr, coefficients=c) * mask_ij)
-                    / normalization
-                )
 
-            three_body_term = 0.0
+                if not featurization:
+                    two_body_term += (
+                        util.high_precision_sum(fn(dr, coefficients=c) * mask_ij)
+                        / normalization
+                    )
+                else:
+                    two_body_term[k] = util.high_precision_sum(
+                        fn(dr, coefficients=c) * mask_ij[:, :, None], 1
+                    )
 
-            for key, fn in three_body_fns.items():
-                i, j, k = key
-                normalization = 1.0
-                if j == k:
-                    normalization = 2.0
+            if three_body_fns is not None:
+                for key, fn in three_body_fns.items():
+                    i, j, k = key
+                    normalization = 1.0
+                    if j == k:
+                        normalization = 2.0
 
-                imask = species == i
-                idxj = jnp.where(species == j, species_enum, max_species)
-                mask_j = jnp.isin(neighbor.idx, idxj) * mask
-                idxk = jnp.where(species == k, species_enum, max_species)
-                mask_k = jnp.isin(neighbor.idx, idxk) * mask
-                mask_ijk = (
-                    imask[:, None, None] * mask_j[:, None, :] * mask_k[:, :, None]
-                )
+                    imask = species == i
+                    idxj = jnp.where(species == j, species_enum, max_species)
+                    mask_j = jnp.isin(neighbor.idx, idxj) * mask
+                    idxk = jnp.where(species == k, species_enum, max_species)
+                    mask_k = jnp.isin(neighbor.idx, idxk) * mask
+                    mask_ijk = (
+                        imask[:, None, None] * mask_j[:, None, :] * mask_k[:, :, None]
+                    )
 
-                c = coefficients_three_body[key]
-                three_body_term += (
-                    util.high_precision_sum(fn(dR, dR, coefficients=c) * mask_ijk)
-                    / normalization
-                )
+                    c = coefficients_three_body[key]
 
-            return one_body_term + two_body_term + three_body_term
+                    if not featurization:
+                        three_body_term += (
+                            util.high_precision_sum(
+                                fn(dR, dR, coefficients=c) * mask_ijk
+                            )
+                            / normalization
+                        )
+                    else:
+                        three_body_term[k] = util.high_precision_sum(
+                            fn(dR, dR, coefficients=c)
+                            * mask_ijk[:, :, :, None, None, None],
+                            (1, 2),
+                        )
+
+            if not featurization:
+                return one_body_term + two_body_term + three_body_term
+            else:
+                return two_body_term, three_body_term
 
     return neighbor_fn, energy_fn
 
@@ -444,8 +375,8 @@ def uf2_mapped(knots, featurization=False):
     return fn
 
 
-def uf3_mapped(knots):
-    three_body = jsp.ndSpline_unsafe(knots, (3, 3, 3))
+def uf3_mapped(knots, featurization=False):
+    three_body = jsp.ndSpline_unsafe(knots, (3, 3, 3), featurization=featurization)
 
     def op(dR12, dR13, coefficients=None):
         dR23 = dR13 - dR12
