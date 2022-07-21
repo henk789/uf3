@@ -1,4 +1,3 @@
-from argparse import ArgumentError
 from typing import List, Tuple, Union
 import jax.numpy as jnp
 from jax.lax import dynamic_slice, scan, dynamic_update_slice
@@ -57,22 +56,22 @@ def ndSpline(
     def fn(x):
         # check number of arguments
         if len(x) != dimensions:
-            raise ArgumentError(
+            raise ValueError(
                 f"This spline has dimension {dimensions}, but x has dimension {len(x)}."
             )
 
         # return 0 for x outside range
-        mask = True
-        n_x = len(x[0])
-        for i in range(dimensions):
-            mask = mask and (knots[i][0] <= x[i]) and (knots[i][-1] > x[i])
-        return spline(x) * mask
+        # mask = True
+        # n_x = len(x[0])
+        # for i in range(dimensions):
+        #     mask = mask and (knots[i][0] <= x[i]) and (knots[i][-1] > x[i])
+        return spline(x) #* mask
 
 
 def ndSpline_unsafe(
-    coefficients: Array,
     knots: List[Array],
     degrees: Tuple[int],
+    coefficients: Array = None,
     backend=BSplineBackend.Symbolic,
     naive_search=False,
     featurization=False,
@@ -89,19 +88,19 @@ def ndSpline_unsafe(
     If featurization is True grad can not be used.
 
     Args:
-        coefficients: A jax.ndarray of shape (len(knots[i]) - degrees[i] - 1, ...)
         knots: A list of knots with knots for each dimension
         degrees: A tuple with the spline degrees for each dimension.
             Degree 3 for cubic splines is most optimized for.
+        coefficients: A jax.ndarray of shape (len(knots[i]) - degrees[i] - 1, ...)
+            Coefficients can also be supplied later to the returned spline function.
         backend: Choose how the B-splines are evaluated.
             BSplineBackend.Symbolic is faster, but only available for degree 3.
             BSplineBackend.DeBoor is more flexible.
-            TODO benchmark backend properly
         featurisation: Choose whether the returned function shoud evaluate the spline
             or return an array of coefficients.shape with the contribution of each B-spline.
             Note that if set to True, vmap has to be used.
     """
-    if not jnp.all(jnp.asarray(degrees) == 3) and backend==BSplineBackend.Symbolic:
+    if not jnp.all(jnp.asarray(degrees) == 3) and backend == BSplineBackend.Symbolic:
         backend = BSplineBackend.DeBoor
         warnings.warn(
             "The symbolic backend is only available for k=3. Changed to DeBoor."
@@ -111,9 +110,11 @@ def ndSpline_unsafe(
     max = []
     s = []
     for t, k in zip(knots, degrees):
-        min.append(t[0])
-        max.append(t[-1])
-        s.append(partial(bspline_factors, t, k=k, basis=backend, naive_search=naive_search))
+        min.append(t[k])
+        max.append(t[-k - 1])
+        s.append(
+            partial(bspline_factors, t, k=k, basis=backend, naive_search=naive_search)
+        )
 
     min = jnp.asarray(min)
     max = jnp.asarray(max)
@@ -128,7 +129,7 @@ def ndSpline_unsafe(
         out = []
 
     @jit
-    def spline_fn(x, coefficients=coefficients):
+    def spline_fn(*x, coefficients=coefficients):
         data = []
         in_cutoff = True
         for i in range(x_dim):
