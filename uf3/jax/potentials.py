@@ -96,6 +96,7 @@ def uf3_neighbor(
     cutoff=5.5,
     dr_threshold: float = 0.5,
     format: NeighborListFormat = partition.Dense,
+    featurization=False,
     **kwargs
 ):
     """
@@ -145,6 +146,7 @@ def uf3_neighbor(
             cutoff,
             dr_threshold,
             format,
+            featurization,
             *kwargs
         )
 
@@ -171,6 +173,7 @@ def _uf2_neighbor(
     cutoff=5.5,
     dr_threshold: float = 0.5,
     format: NeighborListFormat = partition.Dense,
+    featurization=False,
     **kwargs
 ):
     """
@@ -201,7 +204,7 @@ def _uf2_neighbor(
         )
 
     if species is None:
-        two_body_fn = uf2_mapped(knots[0])
+        two_body_fn = uf2_mapped(knots[0], featurization=featurization)
 
         def energy_fn(R, neighbor, **dynamic_kwargs):
 
@@ -221,14 +224,22 @@ def _uf2_neighbor(
                 coefficients_two_body = _coefficients[1]
                 one_body_term = _coefficients[0] * len(R)
 
-            two_body_term = (
-                util.high_precision_sum(
-                    two_body_fn(dr, coefficients=coefficients_two_body) * mask
+            if not featurization:
+                two_body_term = (
+                    util.high_precision_sum(
+                        two_body_fn(dr, coefficients=coefficients_two_body) * mask
+                    )
+                    / 2.0
                 )
-                / 2.0
-            )
 
-            return one_body_term + two_body_term
+                return one_body_term + two_body_term
+            else:
+                two_body_term = util.high_precision_sum(
+                    two_body_fn(dr, coefficients=coefficients_two_body)
+                    * mask[:, :, None],
+                    1,
+                )
+                return two_body_term
 
     else:
         two_body_fns = {}
@@ -422,14 +433,14 @@ def _uf3_neighbor(
     return neighbor_fn, energy_fn
 
 
-def uf2_mapped(knots):
-    spline = jsp.ndSpline_unsafe(knots, (3,))
+def uf2_mapped(knots, featurization=False):
+    spline = jsp.ndSpline_unsafe(knots, (3,), featurization=featurization)
 
     @jit
     def fn(dr, coefficients=None):
         s = partial(spline, coefficients=coefficients)
         return vmap(vmap(s))(dr)
-    
+
     return fn
 
 
