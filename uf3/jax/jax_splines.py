@@ -133,13 +133,14 @@ def ndSpline_unsafe(
         data = []
         in_cutoff = True
         for i in range(x_dim):
-            data.append(s[i](x[i]))
-            in_cutoff = (x[i] >= min[i]) & (x[i] < max[i]) & in_cutoff
+            cut_mask = (x[i] >= min[i]) & (x[i] < max[i])
+            data.append(s[i](x[i] * cut_mask))
+            in_cutoff = cut_mask & in_cutoff
 
         # jnp.einsum(coefficients, *results of basis splines and axis, coefficient axis for featurization)
         # jnp.einsum(coefficients, [0,1,2], A, [0], B, [1], C, [2])
         arg = [item for sublist in zip(data, selector) for item in sublist]
-        return jnp.where(in_cutoff, jnp.einsum(coefficients, indices, *arg, out), 0)
+        return jnp.where(in_cutoff, jnp.einsum(coefficients, indices, *arg, out), 0.0)
 
     return spline_fn
 
