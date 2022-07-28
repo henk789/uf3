@@ -97,6 +97,7 @@ def uf3_neighbor(
     dr_threshold: float = 0.5,
     format: NeighborListFormat = partition.Dense,
     featurization=False,
+    force_features=False,
     **kwargs
 ):
     """
@@ -125,6 +126,8 @@ def uf3_neighbor(
         cutoff: The cutoff for the neighbor list. No interactions beyond this cutoff are considered.
         dr_threshold: 
         format: The JAX-MD neighbor list format. Currently ONLY Dense is supported.
+        featurization: Compute energy contributions per atom per coefficient instead of the total energy.
+        force_features: Additionally compute force contributions.
 
         Returns:
             A JAX-MD neighbor list object  `neighbor_fn`.
@@ -146,6 +149,7 @@ def uf3_neighbor(
         dr_threshold,
         format,
         featurization,
+        force_features,
         **kwargs
     )
 
@@ -160,6 +164,7 @@ def _uf3_neighbor(
     dr_threshold: float = 0.5,
     format: NeighborListFormat = partition.Dense,
     featurization=False,
+    force_features=True,
     **kwargs
 ):
     r_cutoff = jnp.array(cutoff, jnp.float32)
@@ -175,11 +180,15 @@ def _uf3_neighbor(
     )
 
     if species is None:
-        two_body_fn = uf2_mapped(knots[0], featurization=featurization)
+        two_body_fn = uf2_mapped(
+            knots[0], featurization=featurization, force_features=force_features
+        )
         if len(knots) == 1:
             three_body_fn = None
         elif len(knots) == 2:
-            three_body_fn = uf3_mapped(knots[1], featurization=featurization)
+            three_body_fn = uf3_mapped(
+                knots[1], featurization=featurization, force_features=force_features
+            )
         else:
             raise ValueError(
                 "Knots has to be a list of lists of knots for either, 2-body terms only, ",
@@ -244,7 +253,7 @@ def _uf3_neighbor(
                     mask_ijk = mask[:, None, :] * mask[:, :, None]
                     three_body_term = util.high_precision_sum(
                         three_body_fn(dR, dR, coefficients=coefficients_three_body)
-                        * mask_ijk[:, :, :, None, None, None],
+                        * mask_ijk[:, :, :, None],
                         (1, 2),
                     )
 
@@ -255,13 +264,17 @@ def _uf3_neighbor(
     else:
         two_body_fns = {}
         for k, v in knots[0].items():
-            two_body_fns[k] = uf2_mapped(v)
+            two_body_fns[k] = uf2_mapped(
+                v, featurization=featurization, force_features=force_features
+            )
         if len(knots) == 1:
             three_body_fns = None
         elif len(knots) == 2:
             three_body_fns = {}
             for k, v in knots[1].items():
-                three_body_fns[k] = uf3_mapped(v)
+                three_body_fns[k] = uf3_mapped(
+                    v, featurization=featurization, force_features=force_features
+                )
         else:
             raise ValueError(
                 "Knots has to be a list of dictionaries for either, 2-body terms only, ",
@@ -364,23 +377,37 @@ def _uf3_neighbor(
     return neighbor_fn, energy_fn
 
 
-def uf2_mapped(knots, featurization=False):
+def uf2_mapped(knots, featurization=False, force_features=False):
     spline = jsp.ndSpline_unsafe(knots, (3,), featurization=featurization)
 
-    @jit
-    def fn(dr, coefficients=None):
+    def op(dr, coefficients=None):
         k = 3
         mint = knots[0][k]
-        maxt = knots[0][-k-1]
+        maxt = knots[0][-k - 1]
         within_cutoff = (dr >= mint) & (dr < maxt)
         dr = jnp.where(within_cutoff, dr, 0.0)
         s = partial(spline, coefficients=coefficients)
-        return jnp.where(within_cutoff, vmap(vmap(s))(dr), 0.0)
+        if not featurization:
+            return jnp.where(within_cutoff, s(dr), 0.0)
+        else:
+            if force_features:
+                s = jsp.featurization_with_gradients(s, coefficients=coefficients)
+                e, f = s(dr)
+                e = jnp.where(within_cutoff, e, 0.0)
+                f = jnp.where(within_cutoff, f, 0.0)
+                return jnp.stack([e, f]).flatten()
+            else:
+                return jnp.where(within_cutoff, s(dr), 0.0)
+
+    @jit
+    def fn(dr, coefficients=None):
+        f = partial(op, coefficients=coefficients)
+        return vmap(vmap(f))(dr)
 
     return fn
 
 
-def uf3_mapped(knots, featurization=False):
+def uf3_mapped(knots, featurization=False, force_features=False):
     three_body = jsp.ndSpline_unsafe(knots, (3, 3, 3), featurization=featurization)
 
     def op(dR12, dR13, coefficients=None):
@@ -389,35 +416,36 @@ def uf3_mapped(knots, featurization=False):
         dr13 = space.distance(dR13)
         dr23 = space.distance(dR23)
 
-        k=3
+        k = 3
         min1 = knots[0][k]
         min2 = knots[1][k]
         min3 = knots[2][k]
-        max1 = knots[0][-k-1]
-        max2 = knots[1][-k-1]
-        max3 = knots[2][-k-1]
+        max1 = knots[0][-k - 1]
+        max2 = knots[1][-k - 1]
+        max3 = knots[2][-k - 1]
 
-        within1 = (
-            (dr12 >= min1)
-            & (dr12 < max1)
-        )
-
-        within2 = (
-            (dr13 >= min2)
-            & (dr13 < max2)
-        )
-
-        within3 = (
-            (dr23 >= min3)
-            & (dr23 < max3)
-        )
+        within1 = (dr12 >= min1) & (dr12 < max1)
+        within2 = (dr13 >= min2) & (dr13 < max2)
+        within3 = (dr23 >= min3) & (dr23 < max3)
+        within_cutoff = within1 & within2 & within3
 
         dr12 = jnp.where(within1, dr12, 0)
         dr13 = jnp.where(within2, dr13, 0)
         dr23 = jnp.where(within3, dr23, 0)
 
         s = partial(three_body, coefficients=coefficients)
-        return jnp.where(within1 & within2 & within3, s(dr12, dr13, dr23), 0.0)
+
+        if not featurization:
+            return jnp.where(within_cutoff, s(dr12, dr13, dr23), 0.0)
+        else:
+            if force_features:
+                s = jsp.featurization_with_gradients(s, coefficients=coefficients)
+                e, f = s(dr12, dr13, dr23)
+                e = jnp.where(within_cutoff, e, 0.0)
+                f = jnp.where(within_cutoff, f, 0.0)
+                return jnp.stack([e, f]).flatten()
+            else:
+                return jnp.where(within_cutoff, s(dr12, dr13, dr23), 0.0).flatten()
 
     @jit
     def fn(dR12, dR13, coefficients=None):
