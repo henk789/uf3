@@ -21,31 +21,31 @@ def test_ndSpline_unsafe():
 
     # 1-D
     c, k, x = random_spline((15,), sample=100, seed=seed)
-    s = ndSpline_unsafe(c, k, (3,))
+    s = ndSpline_unsafe(k, (3,), c)
     sp = ndsplines.NDSpline(k, c, (3,))
 
-    assert jnp.allclose(vmap(s)(x), sp(x))
+    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x,1)))
 
     # 2-D
     c, k, x = random_spline((15,15), sample=100, seed=seed)
-    s = ndSpline_unsafe(c, k, (3,3))
+    s = ndSpline_unsafe(k, (3,3), c)
     sp = ndsplines.NDSpline(k, c, (3,3))
 
-    assert jnp.allclose(vmap(s)(x), sp(x))
+    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x,1)))
 
     # 3-D
     c, k, x = random_spline((15,15,15), sample=100, seed=seed)
-    s = ndSpline_unsafe(c, k, (3,3,3))
+    s = ndSpline_unsafe(k, (3,3,3), c)
     sp = ndsplines.NDSpline(k, c, (3,3,3))
 
-    assert jnp.allclose(vmap(s)(x), sp(x))
+    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x,1)))
 
     # odd stuff
     c, k, x = random_spline((15,13), degrees=(3,5), sample=100, seed=seed)
-    s = ndSpline_unsafe(c, k, (3,5))
+    s = ndSpline_unsafe(k, (3,5), c)
     sp = ndsplines.NDSpline(k, c, (3,5))
 
-    assert jnp.allclose(vmap(s)(x), sp(x))
+    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x,1)))
 
 
 
