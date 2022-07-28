@@ -369,8 +369,13 @@ def uf2_mapped(knots, featurization=False):
 
     @jit
     def fn(dr, coefficients=None):
+        k = 3
+        mint = knots[0][k]
+        maxt = knots[0][-k-1]
+        within_cutoff = (dr >= mint) & (dr < maxt)
+        dr = jnp.where(within_cutoff, dr, 0.0)
         s = partial(spline, coefficients=coefficients)
-        return vmap(vmap(s))(dr)
+        return jnp.where(within_cutoff, vmap(vmap(s))(dr), 0.0)
 
     return fn
 
@@ -383,8 +388,36 @@ def uf3_mapped(knots, featurization=False):
         dr12 = space.distance(dR12)
         dr13 = space.distance(dR13)
         dr23 = space.distance(dR23)
+
+        k=3
+        min1 = knots[0][k]
+        min2 = knots[1][k]
+        min3 = knots[2][k]
+        max1 = knots[0][-k-1]
+        max2 = knots[1][-k-1]
+        max3 = knots[2][-k-1]
+
+        within1 = (
+            (dr12 >= min1)
+            & (dr12 < max1)
+        )
+
+        within2 = (
+            (dr13 >= min2)
+            & (dr13 < max2)
+        )
+
+        within3 = (
+            (dr23 >= min3)
+            & (dr23 < max3)
+        )
+
+        dr12 = jnp.where(within1, dr12, 0)
+        dr13 = jnp.where(within2, dr13, 0)
+        dr23 = jnp.where(within3, dr23, 0)
+
         s = partial(three_body, coefficients=coefficients)
-        return s(dr12, dr13, dr23)
+        return jnp.where(within1 & within2 & within3, s(dr12, dr13, dr23), 0.0)
 
     @jit
     def fn(dR12, dR13, coefficients=None):
