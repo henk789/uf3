@@ -1,7 +1,7 @@
 from typing import List, Tuple, Union
 import jax.numpy as jnp
 from jax.lax import dynamic_slice, scan, dynamic_update_slice
-from jax import jit
+from jax import jit, jvp
 
 from functools import partial
 
@@ -66,6 +66,28 @@ def ndSpline(
         # for i in range(dimensions):
         #     mask = mask and (knots[i][0] <= x[i]) and (knots[i][-1] > x[i])
         return spline(x) #* mask
+
+
+def featurization_with_gradients(spline, coefficients=None):
+    """
+    Helper function for efficiently evaluating a featurizing spline
+    with the per coefficient gradients.
+
+    Args:
+        spline: A spline function obtained from ndSpline_unsafe with the
+            option featurization=True
+        coefficients: The spline coefficients as in ndSpline_unsafe
+
+    Returns:
+        A function like the one ndSpline_unsafe returns, but this function
+        will return a tuple of the featurized spline values and the featurized
+        gradients of the spline values.
+    """
+    def fn(*x, coefficients=coefficients):
+        y, dy = jvp(spline, x, (1.0,)*len(x))
+        return y, dy
+    
+    return fn
 
 
 def ndSpline_unsafe(
@@ -238,6 +260,7 @@ def symbolic_basis(t: Array, x):
 
     t31 = t[3] - t[1]
     t42 = t[4] - t[2]
+    # B02 = (t31 == 0.0) * (((t[3] - x) / t31) * B11)
     B02 = jnp.where(t31 == 0.0, 0.0, ((t[3] - x) / t31) * B11)
     B12a = jnp.where(t31 == 0.0, 0.0, ((x - t[1]) / t31) * B11)
     B12b = jnp.where(t42 == 0.0, 0.0, ((t[4] - x) / t42) * B21)
