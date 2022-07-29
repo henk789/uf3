@@ -257,9 +257,9 @@ def _uf3_neighbor(
                         (1, 2),
                     )
 
-                    return two_body_term, three_body_term
+                    return two_body_term / 2.0, three_body_term / 2.0
 
-                return two_body_term
+                return two_body_term / 2.0
 
     else:
         two_body_fns = {}
