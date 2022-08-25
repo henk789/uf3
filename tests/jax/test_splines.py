@@ -1,3 +1,4 @@
+from bz2 import compress
 import pytest
 
 from uf3.jax.jax_splines import *
@@ -7,7 +8,7 @@ import numpy as onp
 
 import ndsplines
 
-from jax import vmap
+from jax import vmap, jacrev
 
 from jax.config import config
 
@@ -24,29 +25,28 @@ def test_ndSpline_unsafe():
     s = ndSpline_unsafe(k, (3,), c)
     sp = ndsplines.NDSpline(k, c, (3,))
 
-    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x,1)))
+    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x, 1)))
 
     # 2-D
-    c, k, x = random_spline((15,15), sample=100, seed=seed)
-    s = ndSpline_unsafe(k, (3,3), c)
-    sp = ndsplines.NDSpline(k, c, (3,3))
+    c, k, x = random_spline((15, 15), sample=100, seed=seed)
+    s = ndSpline_unsafe(k, (3, 3), c)
+    sp = ndsplines.NDSpline(k, c, (3, 3))
 
-    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x,1)))
+    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x, 1)))
 
     # 3-D
-    c, k, x = random_spline((15,15,15), sample=100, seed=seed)
-    s = ndSpline_unsafe(k, (3,3,3), c)
-    sp = ndsplines.NDSpline(k, c, (3,3,3))
+    c, k, x = random_spline((15, 15, 15), sample=100, seed=seed)
+    s = ndSpline_unsafe(k, (3, 3, 3), c)
+    sp = ndsplines.NDSpline(k, c, (3, 3, 3))
 
-    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x,1)))
+    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x, 1)))
 
     # odd stuff
-    c, k, x = random_spline((15,13), degrees=(3,5), sample=100, seed=seed)
-    s = ndSpline_unsafe(k, (3,5), c)
-    sp = ndsplines.NDSpline(k, c, (3,5))
+    c, k, x = random_spline((15, 13), degrees=(3, 5), sample=100, seed=seed)
+    s = ndSpline_unsafe(k, (3, 5), c)
+    sp = ndsplines.NDSpline(k, c, (3, 5))
 
-    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x,1)))
-
+    assert jnp.allclose(vmap(s)(*x), sp(jnp.stack(x, 1)))
 
 
 def test_deBoor_backend():
@@ -90,6 +90,13 @@ def test_deBoor_backend():
 
     assert len(c[c != 0.0]) == len(knots[k + 1 : -k - 1]) * k
 
+    # no division-by-zero with maximal duplicate knots
+    knots = onp.ones_like(knots)
+    knots[20:] = 2.0
+    out = deBoor_factor_unsafe(knots, 1.5)
+    assert not jnp.isnan(out).any()
+    assert not jnp.isinf(out).any()
+
 
 def test_symbolic_backend():
     rng = onp.random.default_rng()
@@ -132,3 +139,50 @@ def test_symbolic_backend():
 
     assert len(c[c != 0.0]) == len(knots[k + 1 : -k - 1]) * 3
 
+    # no division-by-zero with maximal duplicate knots
+    knots = onp.ones_like(knots)
+    knots[20:] = 2.0
+    out = symbolic_factor_unsafe(knots, 1.5)
+    assert not jnp.isnan(out).any()
+    assert not jnp.isinf(out).any()
+
+
+def test_backends():
+    rng = onp.random.default_rng()
+    seed = rng.integers(0, 999)
+    print(f"Seed for energy test: {seed}")
+    rng = onp.random.default_rng(seed)
+
+    n_xs = 100
+    k = 3
+
+    symbolic_factor_unsafe = partial(
+        bspline_factors, k=k, basis=BSplineBackend.Symbolic, safe=False, compress=True
+    )
+
+    deBoor_factor_unsafe = partial(
+        bspline_factors, k=k, basis=BSplineBackend.DeBoor, safe=False, compress=True
+    )
+
+    knots = rng.uniform(0.0, 11, 50)
+
+    knots = onp.sort(knots)
+    knots[0] = 0
+    knots = onp.pad(knots, (3, 3), "edge")
+
+    knots = jnp.asarray(knots)
+
+    xs = rng.uniform(0.0, knots[-1], n_xs)
+
+    f1 = lambda x: symbolic_factor_unsafe(knots, x)
+    f2 = lambda x: deBoor_factor_unsafe(knots, x)
+
+    res1, _ = vmap(f1)(xs)
+    res2, _ = vmap(f1)(xs)
+
+    assert jnp.allclose(res1, res2)
+
+    d1, _ = vmap(jacrev(f1, has_aux=True))(xs)
+    d2, _ = vmap(jacrev(f2, has_aux=True))(xs)
+
+    assert jnp.allclose(d1, d2)

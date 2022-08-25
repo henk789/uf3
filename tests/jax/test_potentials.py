@@ -1,4 +1,6 @@
 import pytest
+import uf3
+import os
 
 from jax import random
 import numpy as onp
@@ -15,20 +17,17 @@ from uf3.data import composition
 from uf3.representation import bspline
 from uf3.regression import least_squares
 from uf3.forcefield import calculator
+from uf3.util.random import random_spline
 
 
 def test_energy_2_body():
     N = 50
     dimension = 3
     box_size = 12.0
-    # key = random.PRNGKey(123)
-
-    # key, split = random.split(key)
     rng = onp.random.default_rng()
     seed = rng.integers(0, 999)
     print(f"Seed for energy test: {seed}")
     rng = onp.random.default_rng(seed)
-    rng = onp.random.default_rng(848)
 
     R = rng.uniform(0.0, box_size, (N, dimension))
     R = jnp.asarray(R, dtype=jnp.float64)
@@ -52,11 +51,13 @@ def test_energy_2_body():
     coefficients = jnp.asarray(coefficients)
     knots = jnp.asarray(knots)
 
-    pair = uf2_pair(
-        displacement, coefficients=coefficients, knots=knots, cutoff=knots[-1]
-    )
-    nf, ef = uf2_neighbor(
-        displacement, box_size, coefficients=coefficients, knots=knots, cutoff=knots[-1]
+    pair = uf2_pair(displacement, [knots], coefficients=coefficients)
+    nf, ef = uf3_neighbor(
+        displacement,
+        box_size,
+        [[knots]],
+        coefficients=[coefficients],
+        cutoff=knots[-1] + 0.5,
     )
 
     coeff_dict = {}
@@ -65,15 +66,15 @@ def test_energy_2_body():
     coeff_dict[(1, 1)] = coefficients
 
     knot_dict = {}
-    knot_dict[(0, 0)] = knots
-    knot_dict[(0, 1)] = knots
-    knot_dict[(1, 1)] = knots
-    nfs, efs = uf2_neighbor(
+    knot_dict[(0, 0)] = [knots]
+    knot_dict[(0, 1)] = [knots]
+    knot_dict[(1, 1)] = [knots]
+    nfs, efs = uf3_neighbor(
         displacement,
         box_size,
+        [knot_dict],
         species=species,
-        coefficients=coeff_dict,
-        knots=knot_dict,
+        coefficients=[coeff_dict],
         cutoff=knots[-1],
     )
 
@@ -86,31 +87,159 @@ def test_energy_2_body():
     energy_3 = efs(R, neighbor=nbrs)
 
     assert jnp.allclose(energy_1, energy_2)
-    assert jnp.allclose(energy_1, energy_3)
+    assert jnp.allclose(energy_2, energy_3)
 
     pos = onp.asarray(R)
     cell = onp.asarray(box)
-    pbc = onp.asarray([True,True,True])
-    atoms = ase.Atoms('W'+str(len(R)), positions=pos, cell=cell, pbc=pbc)
-    r_min_map = {('W', 'W'): float(knots[0]),
-            }
-    r_max_map = {('W', 'W'): float(knots[-1]),
-            }
-    chemical_system = composition.ChemicalSystem(element_list=['W'],
-                                        degree=2)
-    bspline_config = bspline.BSplineBasis(chemical_system,
-                                        r_min_map=r_min_map,
-                                        r_max_map=r_max_map)
-    bspline_config.knots_map[('W','W')] = onp.asarray(knots)
+    pbc = onp.asarray([True, True, True])
+    atoms = ase.Atoms("W" + str(len(R)), positions=pos, cell=cell, pbc=pbc)
+    r_min_map = {
+        ("W", "W"): float(knots[0]),
+    }
+    r_max_map = {
+        ("W", "W"): float(knots[-1]),
+    }
+    chemical_system = composition.ChemicalSystem(element_list=["W"], degree=2)
+    bspline_config = bspline.BSplineBasis(
+        chemical_system, r_min_map=r_min_map, r_max_map=r_max_map
+    )
+    bspline_config.knots_map[("W", "W")] = onp.asarray(knots)
     model = least_squares.WeightedLinearModel(bspline_config)
     model.coefficients = onp.insert(onp.asarray(coefficients), 0, 0)
     calc = calculator.UFCalculator(model)
     atoms.set_calculator(calc)
 
-    energy_4 = atoms.get_potential_energy(force_consistent=True) / 2.0
+    energy_4 = atoms.get_potential_energy(force_consistent=True)
 
-    assert jnp.allclose(energy_1, energy_4)
+    assert jnp.allclose(energy_2, energy_4)
 
+
+def test_energy_3_body():
+    N = 50
+    dimension = 3
+    box_size = 12.0
+    rng = onp.random.default_rng()
+    seed = rng.integers(0, 999)
+    print(f"Seed for energy test: {seed}")
+    rng = onp.random.default_rng(seed)
+
+    R = rng.uniform(0.0, box_size, (N, dimension))
+    R = jnp.asarray(R, dtype=jnp.float64)
+
+    box = jnp.eye(dimension) * box_size
+    displacement, shift = space.periodic_general(box, fractional_coordinates=False)
+
+    species = onp.concatenate([onp.zeros(N // 2), onp.ones(N - (N // 2))])
+    rng.shuffle(species)
+    species = jnp.asarray(species, dtype=jnp.int16)
+
+    pos = onp.asarray(R)
+    cell = onp.asarray(box)
+    pbc = onp.asarray([True, True, True])
+    atoms = ase.Atoms("W" + str(len(R)), positions=pos, cell=cell, pbc=pbc)
+    r_min_map = {("W", "W"): 1.5,
+                ("W", "W", "W"): [1.5, 1.5, 1.5],
+            }
+    r_max_map = {("W", "W"): 5.5,
+                ("W", "W", "W"): [3.5, 3.5, 7.0],
+            }
+    resolution_map = {("W", "W"): 25,
+                    ("W", "W", "W"): [5, 5, 10],
+                    }
+    trailing_trim = 3
+    chemical_system = composition.ChemicalSystem(element_list=["W"], degree=3)
+    bspline_config = bspline.BSplineBasis(chemical_system,
+                                        r_min_map=r_min_map,
+                                        r_max_map=r_max_map,
+                                        resolution_map=resolution_map,
+                                        trailing_trim=trailing_trim)
+
+    model = least_squares.WeightedLinearModel(bspline_config)
+
+    pkg_directory = os.path.dirname(os.path.dirname(uf3.__file__))
+    data_directory = os.path.join(pkg_directory, "tests/data")
+    fname = os.path.join(data_directory, "test_potentials", "model_uf23.json")
+    model.load(filename=fname)
+    calc = calculator.UFCalculator(model)
+    ndspline2 = calc.pair_potentials[('W','W')]
+    ndspline3 = calc.trio_potentials[('W','W','W')]
+    knots2 = [jnp.asarray(ndspline2.knots[0])]
+    knots3 = ndspline3.knots
+    knots3 = [jnp.asarray(i) for i in knots3]
+
+    coefficients2 = rng.standard_normal(len(knots2[0]) - 7) * 5
+    coefficients2 = onp.pad(coefficients2, (0, 3))
+    coefficients2 = jnp.asarray(coefficients2)
+
+    coefficients3 = rng.standard_normal(ndspline3.coefficients.shape[:-1]) * 5
+    coefficients3 = jnp.asarray(coefficients3)
+
+    pair = uf3_pair(
+        displacement, [knots2, knots3], coefficients=[coefficients2, coefficients3]
+    )
+    nf, ef = uf3_neighbor(
+        displacement,
+        box_size,
+        [knots2, knots3],
+        coefficients=[coefficients2, coefficients3],
+        cutoff=knots2[0][-1] + 0.5,
+    )
+
+    coeff_dict2 = {}
+    coeff_dict2[(0, 0)] = coefficients2
+    coeff_dict2[(0, 1)] = coefficients2
+    coeff_dict2[(1, 1)] = coefficients2
+
+    knot_dict2 = {}
+    knot_dict2[(0, 0)] = knots2
+    knot_dict2[(0, 1)] = knots2
+    knot_dict2[(1, 1)] = knots2
+
+    coeff_dict3 = {}
+    coeff_dict3[(0, 0, 0)] = coefficients3
+    coeff_dict3[(0, 0, 1)] = coefficients3
+    coeff_dict3[(0, 1, 1)] = coefficients3
+    coeff_dict3[(1, 0, 0)] = coefficients3
+    coeff_dict3[(1, 0, 1)] = coefficients3
+    coeff_dict3[(1, 1, 1)] = coefficients3
+
+    knot_dict3 = {}
+    knot_dict3[(0, 0, 0)] = knots3
+    knot_dict3[(0, 0, 1)] = knots3
+    knot_dict3[(0, 1, 1)] = knots3
+    knot_dict3[(1, 0, 0)] = knots3
+    knot_dict3[(1, 0, 1)] = knots3
+    knot_dict3[(1, 1, 1)] = knots3
+
+    nfs, efs = uf3_neighbor(
+        displacement,
+        box_size,
+        [knot_dict2, knot_dict3],
+        species=species,
+        coefficients=[coeff_dict2, coeff_dict3],
+        cutoff=knots2[0][-1] + 0.5,
+    )
+
+    energy_1 = pair(R)
+
+    nbrs = nf.allocate(R)
+    energy_2 = ef(R, neighbor=nbrs)
+
+    nbrs = nfs.allocate(R)
+    energy_3 = efs(R, neighbor=nbrs)
+
+    assert jnp.allclose(energy_1, energy_2)
+    assert jnp.allclose(energy_2, energy_3)
+
+    ndspline2.coefficients = onp.asarray(coefficients2[:,None])
+    ndspline3.coefficients = onp.asarray(coefficients3[:,:,:,None])
+    calc.pair_potentials[('W','W')] = ndspline2
+    calc.trio_potentials[('W','W','W')] = ndspline3
+    atoms.set_calculator(calc)
+
+    energy_4 = atoms.get_potential_energy(force_consistent=True)
+
+    assert jnp.allclose(energy_2, energy_4)
 
 
 def test_2_body_interaction_count():
@@ -138,12 +267,12 @@ def test_2_body_interaction_count():
 
     coefficients = jnp.ones(len(knots) - 4)
 
-    pair = uf2_pair(displacement, coefficients=coefficients, knots=knots)
-    nf, ef = uf2_neighbor(
-        displacement, box_size, coefficients=coefficients, knots=knots, cutoff=box_size
+    pair = uf2_pair(displacement, [knots], coefficients=coefficients)
+    nf, ef = uf3_neighbor(
+        displacement, box_size, [[knots]], coefficients=[coefficients], cutoff=box_size
     )
 
-    n_pairs = N * (N - 1) / 2
+    n_pairs = N * (N - 1)
 
     assert jnp.allclose(pair(R), n_pairs)
 
@@ -153,11 +282,7 @@ def test_2_body_interaction_count():
     knots3 = [knots, knots, knots]
     coefficients3 = jnp.zeros((len(coefficients),) * 3)
     pair3 = uf3_pair(
-        displacement,
-        coefficients=coefficients,
-        knots=knots,
-        coefficients3=coefficients3,
-        knots3=knots3,
+        displacement, [[knots], knots3], coefficients=[coefficients, coefficients3],
     )
 
     assert jnp.allclose(pair3(R), n_pairs)
@@ -168,15 +293,15 @@ def test_2_body_interaction_count():
     coeff_dict[(1, 1)] = coefficients
 
     knot_dict = {}
-    knot_dict[(0, 0)] = knots
-    knot_dict[(0, 1)] = knots
-    knot_dict[(1, 1)] = knots
-    nfs, efs = uf2_neighbor(
+    knot_dict[(0, 0)] = [knots]
+    knot_dict[(0, 1)] = [knots]
+    knot_dict[(1, 1)] = [knots]
+    nfs, efs = uf3_neighbor(
         displacement,
         box_size,
+        [knot_dict],
         species=species,
-        coefficients=coeff_dict,
-        knots=knot_dict,
+        coefficients=[coeff_dict],
         cutoff=box_size,
     )
 
@@ -202,11 +327,9 @@ def test_2_body_interaction_count():
     nf, ef = uf3_neighbor(
         displacement,
         box_size,
+        [knot_dict, k3],
         species=species,
-        knots2=knot_dict,
-        coefficients2=coeff_dict,
-        knots3=k3,
-        coefficients3=c3,
+        coefficients=[coeff_dict, c3],
         cutoff=box_size,
     )
     nbrs = nf.allocate(R)
@@ -246,11 +369,7 @@ def test_3_body_interaction_count():
     knots3 = [knots, knots, knots]
     coefficients3 = jnp.ones((len(coefficients),) * 3)
     pair3 = uf3_pair(
-        displacement,
-        coefficients=coefficients,
-        knots=knots,
-        coefficients3=coefficients3,
-        knots3=knots3,
+        displacement, [[knots], knots3], coefficients=[coefficients, coefficients3],
     )
 
     assert jnp.allclose(pair3(R), n_triplets)
@@ -258,10 +377,8 @@ def test_3_body_interaction_count():
     nf, ef = uf3_neighbor(
         displacement,
         box_size,
-        knots2=knots,
-        coefficients2=coefficients,
-        knots3=knots3,
-        coefficients3=coefficients3,
+        [[knots], knots3],
+        coefficients=[coefficients, coefficients3],
         cutoff=box_size,
     )
     nbrs = nf.allocate(R)
@@ -274,9 +391,9 @@ def test_3_body_interaction_count():
     coeff_dict[(1, 1)] = coefficients
 
     knot_dict = {}
-    knot_dict[(0, 0)] = knots
-    knot_dict[(0, 1)] = knots
-    knot_dict[(1, 1)] = knots
+    knot_dict[(0, 0)] = [knots]
+    knot_dict[(0, 1)] = [knots]
+    knot_dict[(1, 1)] = [knots]
 
     c3 = {}
     c3[(0, 0, 0)] = coefficients3
@@ -297,11 +414,9 @@ def test_3_body_interaction_count():
     nfs, efs = uf3_neighbor(
         displacement,
         box_size,
+        [knot_dict, k3],
         species=species,
-        knots2=knot_dict,
-        coefficients2=coeff_dict,
-        knots3=k3,
-        coefficients3=c3,
+        coefficients=[coeff_dict, c3],
         cutoff=box_size,
     )
     nbrss = nf.allocate(R)

@@ -1,5 +1,5 @@
 import jax.numpy as jnp
-from jax import grad, jvp
+from jax import grad, jacrev #,jvp
 
 from jax_md import space
 
@@ -86,29 +86,30 @@ def stress_neighborlist_featurization_fn(energy_fn, box):
     )
 
     box_volume = jnp.linalg.det(box)
-    tangentxx = jnp.asarray([[1.0, 0, 0], [0, 0, 0], [0, 0, 0]])
-    tangentyy = jnp.asarray([[0.0, 0, 0], [0, 1, 0], [0, 0, 0]])
-    tangentzz = jnp.asarray([[0.0, 0, 0], [0, 0, 0], [0, 0, 1]])
-    tangentyz = jnp.asarray([[0.0, 0, 0], [0, 0, 1], [0, 0, 0]])
-    tangentxz = jnp.asarray([[0.0, 0, 1], [0, 0, 0], [0, 0, 0]])
-    tangentxy = jnp.asarray([[0.0, 1, 0], [0, 0, 0], [0, 0, 0]])
+    # tangentxx = jnp.asarray([[1.0, 0, 0], [0, 0, 0], [0, 0, 0]])
+    # tangentyy = jnp.asarray([[0.0, 0, 0], [0, 1, 0], [0, 0, 0]])
+    # tangentzz = jnp.asarray([[0.0, 0, 0], [0, 0, 0], [0, 0, 1]])
+    # tangentyz = jnp.asarray([[0.0, 0, 0], [0, 0, 1], [0, 0, 0]])
+    # tangentxz = jnp.asarray([[0.0, 0, 1], [0, 0, 0], [0, 0, 0]])
+    # tangentxy = jnp.asarray([[0.0, 1, 0], [0, 0, 0], [0, 0, 0]])
 
     def stress_fn(R, nbrs, deformation, *args, **kwargs):
         fn = lambda x: strained_energy_fn(R, nbrs, x, *args, **kwargs)
-        _, stressxx = jvp(fn, (deformation,), (tangentxx,))
-        _, stressyy = jvp(fn, (deformation,), (tangentyy,))
-        _, stresszz = jvp(fn, (deformation,), (tangentzz,))
-        _, stressyz = jvp(fn, (deformation,), (tangentyz,))
-        _, stressxz = jvp(fn, (deformation,), (tangentxz,))
-        _, stressxy = jvp(fn, (deformation,), (tangentxy,))
-        stressxx = stressxx / box_volume
-        stressyy = stressyy / box_volume
-        stresszz = stresszz / box_volume
-        stressyz = stressyz / box_volume
-        stressxz = stressxz / box_volume
-        stressxy = stressxy / box_volume
-        stress = [stressxx, stressyy, stresszz, stressyz, stressxz, stressxy]
-        return stress
+        stress = jacrev(fn)(deformation)
+        # _, stressxx = jvp(fn, (deformation,), (tangentxx,))
+        # _, stressyy = jvp(fn, (deformation,), (tangentyy,))
+        # _, stresszz = jvp(fn, (deformation,), (tangentzz,))
+        # _, stressyz = jvp(fn, (deformation,), (tangentyz,))
+        # _, stressxz = jvp(fn, (deformation,), (tangentxz,))
+        # _, stressxy = jvp(fn, (deformation,), (tangentxy,))
+        # stressxx = stressxx / box_volume
+        # stressyy = stressyy / box_volume
+        # stresszz = stresszz / box_volume
+        # stressyz = stressyz / box_volume
+        # stressxz = stressxz / box_volume
+        # stressxy = stressxy / box_volume
+        # stress = [stressxx, stressyy, stresszz, stressyz, stressxz, stressxy]
+        return stress / box_volume
 
     deformation = jnp.zeros_like(box)
 

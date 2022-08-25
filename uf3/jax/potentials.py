@@ -4,9 +4,12 @@ from functools import partial
 
 from typing import Callable, List, Union, Dict, Tuple
 
+import jax
+from jax.lax import dynamic_slice
 import jax.numpy as jnp
 from jax import vmap, jit
 from jax_md import space, partition, util
+from jax_md.smap import _diagonal_mask
 
 # Types
 
@@ -50,9 +53,16 @@ def uf2_pair(
         dR = space.map_product(d)(R, R)
         dr = space.distance(dR)
 
-        two_body_term = util.high_precision_sum(two_body_fn(dr, coefficients)) / 2.0
+        one_body_term = 0.0
+        if len(coefficients) == 2:
+            one_body_term = coefficients[0] * len(R)
+            co = coefficients[1]
+        else:
+            co = coefficients[0]
 
-        return two_body_term
+        two_body_term = util.high_precision_sum(_diagonal_mask(two_body_fn(dr, co)))
+
+        return one_body_term + two_body_term
 
     return compute_fn
 
@@ -77,12 +87,24 @@ def uf3_pair(
         dR = space.map_product(d)(R, R)
         dr = space.distance(dR)
 
-        two_body_term = util.high_precision_sum(two_body_fn(dr, coefficients[0])) / 2.0
+        id = f32(1.0) - jnp.eye(R.shape[0])
+        mask = id[None, :, :] * id[:, None, :] * id[:, :, None]
+
+        one_body_term = 0.0
+        if len(coefficients) == 3:
+            one_body_term = coefficients[0] * len(R)
+            co2 = coefficients[1]
+            co3 = coefficients[2]
+        else:
+            co2 = coefficients[0]
+            co3 = coefficients[1]
+
+        two_body_term = util.high_precision_sum(_diagonal_mask(two_body_fn(dr, co2)))
         three_body_term = (
-            util.high_precision_sum(three_body_fn(dR, dR, coefficients[1])) / 2.0
+            util.high_precision_sum(three_body_fn(dR, dR, co3) * mask) / 2.0
         )
 
-        return two_body_term + three_body_term
+        return one_body_term + two_body_term + three_body_term
 
     return compute_fn
 
@@ -218,20 +240,18 @@ def _uf3_neighbor(
 
             d = partial(displacement, **_kwargs)
             mask = partition.neighbor_list_mask(neighbor)
+            id = f32(1.0) - jnp.eye(neighbor.idx.shape[1])
 
             dR = space.map_neighbor(d)(R, R[neighbor.idx])
             dr = space.distance(dR)
 
             if not featurization:
-                two_body_term = (
-                    util.high_precision_sum(
-                        two_body_fn(dr, coefficients=coefficients_two_body) * mask
-                    )
-                    / 2.0
+                two_body_term = util.high_precision_sum(
+                    two_body_fn(dr, coefficients=coefficients_two_body) * mask
                 )
 
                 if three_body_fn is not None:
-                    mask_ijk = mask[:, None, :] * mask[:, :, None]
+                    mask_ijk = mask[:, None, :] * mask[:, :, None] * id[None, :, :]
                     three_body_term = (
                         util.high_precision_sum(
                             three_body_fn(dR, dR, coefficients=coefficients_three_body)
@@ -250,16 +270,16 @@ def _uf3_neighbor(
                 )
 
                 if three_body_fn is not None:
-                    mask_ijk = mask[:, None, :] * mask[:, :, None]
+                    mask_ijk = mask[:, None, :] * mask[:, :, None] * id[None, :, :]
                     three_body_term = util.high_precision_sum(
                         three_body_fn(dR, dR, coefficients=coefficients_three_body)
                         * mask_ijk[:, :, :, None],
                         (1, 2),
                     )
 
-                    return two_body_term / 2.0, three_body_term / 2.0
+                    return two_body_term, three_body_term
 
-                return two_body_term / 2.0
+                return two_body_term
 
     else:
         two_body_fns = {}
@@ -315,12 +335,13 @@ def _uf3_neighbor(
                 three_body_term = {}
 
             mask = neighbor.idx < len(neighbor.idx)
+            id = f32(1.0) - jnp.eye(neighbor.idx.shape[1])
 
             for k, fn in two_body_fns.items():
                 i, j = k
-                normalization = 1.0
+                normalization = 2.0
                 if i == j:
-                    normalization = 2.0
+                    normalization = 1.0
                 idx = jnp.where(species == j, species_enum, max_species)
                 mask_j = jnp.isin(neighbor.idx, idx) * mask
                 mask_ij = (i == species)[:, None] * mask_j
@@ -330,7 +351,7 @@ def _uf3_neighbor(
                 if not featurization:
                     two_body_term += (
                         util.high_precision_sum(fn(dr, coefficients=c) * mask_ij)
-                        / normalization
+                        * normalization
                     )
                 else:
                     two_body_term[k] = util.high_precision_sum(
@@ -350,7 +371,10 @@ def _uf3_neighbor(
                     idxk = jnp.where(species == k, species_enum, max_species)
                     mask_k = jnp.isin(neighbor.idx, idxk) * mask
                     mask_ijk = (
-                        imask[:, None, None] * mask_j[:, None, :] * mask_k[:, :, None]
+                        imask[:, None, None]
+                        * mask_j[:, None, :]
+                        * mask_k[:, :, None]
+                        * id[None, :, :]
                     )
 
                     c = coefficients_three_body[key]
@@ -377,15 +401,17 @@ def _uf3_neighbor(
     return neighbor_fn, energy_fn
 
 
-def uf2_mapped(knots, featurization=False, force_features=False):
-    spline = jsp.ndSpline_unsafe(knots, (3,), featurization=featurization)
+def uf2_interaction(knots, featurization=False, force_features=False):
+    spline = jsp.ndSpline_unsafe(
+        knots, (3,), featurization=featurization, compress=not featurization
+    )
 
     def op(dr, coefficients=None):
         k = 3
         mint = knots[0][k]
         maxt = knots[0][-k - 1]
         within_cutoff = (dr >= mint) & (dr < maxt)
-        dr = jnp.where(within_cutoff, dr, 0.0)
+        dr = jnp.where(within_cutoff, dr, mint)
         s = partial(spline, coefficients=coefficients)
         if not featurization:
             return jnp.where(within_cutoff, s(dr), 0.0)
@@ -399,7 +425,12 @@ def uf2_mapped(knots, featurization=False, force_features=False):
             else:
                 return jnp.where(within_cutoff, s(dr), 0.0)
 
-    @jit
+    return op
+
+
+def uf2_mapped(knots, featurization=False, force_features=False):
+    op = uf2_interaction(knots, featurization, force_features)
+
     def fn(dr, coefficients=None):
         f = partial(op, coefficients=coefficients)
         return vmap(vmap(f))(dr)
@@ -408,7 +439,27 @@ def uf2_mapped(knots, featurization=False, force_features=False):
 
 
 def uf3_mapped(knots, featurization=False, force_features=False):
-    three_body = jsp.ndSpline_unsafe(knots, (3, 3, 3), featurization=featurization)
+    s0 = partial(
+        jsp.bspline_factors,
+        knots[0],
+        k=3,
+        basis=jsp.BSplineBackend.Symbolic,
+        compress=not featurization
+    )
+    s1 = partial(
+        jsp.bspline_factors,
+        knots[1],
+        k=3,
+        basis=jsp.BSplineBackend.Symbolic,
+        compress=not featurization
+    )
+    s2 = partial(
+        jsp.bspline_factors,
+        knots[2],
+        k=3,
+        basis=jsp.BSplineBackend.Symbolic,
+        compress=not featurization
+    )
 
     def op(dR12, dR13, coefficients=None):
         dR23 = dR13 - dR12
@@ -429,15 +480,35 @@ def uf3_mapped(knots, featurization=False, force_features=False):
         within3 = (dr23 >= min3) & (dr23 < max3)
         within_cutoff = within1 & within2 & within3
 
-        dr12 = jnp.where(within1, dr12, 0)
-        dr13 = jnp.where(within2, dr13, 0)
-        dr23 = jnp.where(within3, dr23, 0)
-
-        s = partial(three_body, coefficients=coefficients)
+        dr12 = jnp.where(within1, dr12, min1)
+        dr13 = jnp.where(within2, dr13, min2)
+        dr23 = jnp.where(within3, dr23, min3)
 
         if not featurization:
-            return jnp.where(within_cutoff, s(dr12, dr13, dr23), 0.0)
+            A, iA = s0(dr12)
+            B, iB = s1(dr13)
+            C, iC = s2(dr23)
+            res = jnp.sum(
+                dynamic_slice(coefficients, (iA, iB, iC), (k + 1, k + 1, k + 1))
+                * A[:, None, None]
+                * B[None, :, None]
+                * C[None, None, :]
+            )
+
+            return jnp.where(within_cutoff, res, 0.0)
         else:
+            def s(a, b, c):
+                A = s0(a)
+                B = s1(b)
+                C = s2(c)
+                return jnp.where(
+                    within_cutoff,
+                    jnp.einsum(
+                        coefficients, [0, 1, 2], A, [0], B, [1], C, [2], [0, 1, 2]
+                    ),
+                    0.0,
+                )
+            
             if force_features:
                 s = jsp.featurization_with_gradients(s, coefficients=coefficients)
                 e, f = s(dr12, dr13, dr23)
@@ -445,9 +516,10 @@ def uf3_mapped(knots, featurization=False, force_features=False):
                 f = jnp.where(within_cutoff, f, 0.0)
                 return jnp.stack([e, f]).flatten()
             else:
-                return jnp.where(within_cutoff, s(dr12, dr13, dr23), 0.0).flatten()
+                return s(dr12, dr13, dr23).flatten()
 
-    @jit
+    # checkpoint lowers memory usage for gradients, but slows down the computation
+    # @jax.checkpoint
     def fn(dR12, dR13, coefficients=None):
         f = partial(op, coefficients=coefficients)
         return vmap(vmap(vmap(f, (0, None)), (None, 0)))(dR12, dR13)

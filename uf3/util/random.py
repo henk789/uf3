@@ -67,8 +67,10 @@ def random_spline(resolution, min=0, max=10, sample=None, degrees=None, seed=Non
         x = [0] * dim
         for i in range(dim):
             x[i] = jnp.asarray(rng.uniform(min[i], maxi[i], sample))
+        return (coefficients, knots, tuple(x))
+    
+    return (coefficients, knots)
 
-    return (coefficients, knots, tuple(x))
 
 
 def random_system(cell_size, size, n_trajectories, atom='W', seed=123):
