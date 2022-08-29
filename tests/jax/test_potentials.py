@@ -51,7 +51,7 @@ def test_energy_2_body():
     coefficients = jnp.asarray(coefficients)
     knots = jnp.asarray(knots)
 
-    pair = uf2_pair(displacement, [knots], coefficients=coefficients)
+    pair = uf2_pair(displacement, [knots], coefficients=[coefficients])
     nf, ef = uf3_neighbor(
         displacement,
         box_size,
@@ -115,7 +115,7 @@ def test_energy_2_body():
 
 
 def test_energy_3_body():
-    N = 50
+    N = 20
     dimension = 3
     box_size = 12.0
     rng = onp.random.default_rng()
@@ -171,8 +171,15 @@ def test_energy_3_body():
     coefficients2 = onp.pad(coefficients2, (0, 3))
     coefficients2 = jnp.asarray(coefficients2)
 
-    coefficients3 = rng.standard_normal(ndspline3.coefficients.shape[:-1]) * 5
-    coefficients3 = jnp.asarray(coefficients3)
+    # coefficients3 = rng.standard_normal(ndspline3.coefficients.shape[:-1]) * 5
+    # coefficients3 = onp.pad(coefficients3[3:-3,3:-3,3:-3], ((3,3),(3,3),(3,3)))
+    # coefficients3
+    # coefficients3 = jnp.asarray(coefficients3)
+    # assert coefficients3.shape == ndspline3.coefficients[:,:,:,0].shape
+    
+    # coefficients need to be symetric for ASE and JAX with species, we do not have a random generator as of yet
+    # with the exact symmetries required
+    coefficients3 = jnp.asarray(ndspline3.coefficients[:,:,:,0])
 
     pair = uf3_pair(
         displacement, [knots2, knots3], coefficients=[coefficients2, coefficients3]
@@ -225,8 +232,8 @@ def test_energy_3_body():
     nbrs = nf.allocate(R)
     energy_2 = ef(R, neighbor=nbrs)
 
-    nbrs = nfs.allocate(R)
-    energy_3 = efs(R, neighbor=nbrs)
+    nbrss = nfs.allocate(R)
+    energy_3 = efs(R, neighbor=nbrss)
 
     assert jnp.allclose(energy_1, energy_2)
     assert jnp.allclose(energy_2, energy_3)
@@ -267,7 +274,7 @@ def test_2_body_interaction_count():
 
     coefficients = jnp.ones(len(knots) - 4)
 
-    pair = uf2_pair(displacement, [knots], coefficients=coefficients)
+    pair = uf2_pair(displacement, [knots], coefficients=[coefficients])
     nf, ef = uf3_neighbor(
         displacement, box_size, [[knots]], coefficients=[coefficients], cutoff=box_size
     )
@@ -419,7 +426,7 @@ def test_3_body_interaction_count():
         coefficients=[coeff_dict, c3],
         cutoff=box_size,
     )
-    nbrss = nf.allocate(R)
+    nbrss = nfs.allocate(R)
 
     assert jnp.allclose(efs(R, nbrss), n_triplets)
 
