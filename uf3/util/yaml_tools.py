@@ -8,7 +8,7 @@ import logging
 accepted_file_formats = ['.xyz', '.pkl']
 
 default_settings = {'verbose': 20, 'outputs_path': './outputs', 'elements': 'W', 'degree': 2, 'seed': 0, 'data': {'db_path': 'data.db', 'max_per_file': -1, 'min_diff': 0.0, 'generate_stats': True, 'progress': 'bar', 'vasp_pressure': False, 'sources': {'path': ['./w-14.xyz', './w-14.xyz'], 'pattern': '*'}, 'keys': {'atoms_key': 'geometry', 'energy_key': 'energy', 'force_key': 'force', 'size_key': 'size'}, 'pickle_path': 'data1.pkl'}, 'basis': {'r_min': 0, 'r_max': 5.5, 'resolution': 15, 'fit_offsets': True, 'trailing_trim': 3, 'leading_trim': 0, 'mask_trim': True, 'knot_strategy': 'linear', 'knots_path': 'knots.json', 'load_knots': False, 'dump_knots': False}, 'features': {
-    'db_path': 'data.db', 'features_path': 'features.h5', 'n_cores': 4, 'parallel': 'python', 'fit_forces': True, 'column_prefix': 'x', 'batch_size': 100, 'table_template': 'features_{}'}, 'model': {'model_path': 'model.json'}, 'learning': {'features_path': 'features.h5', 'splits_path': 'splits.json', 'weight': 0.5, 'model_path': 'model.json', 'batch_size': 2500, 'regularizer': {'ridge_1b': 1e-08, 'curvature_1b': 0, 'ridge_2b': 0, 'curvature_2b': 1e-08, 'ridge_3b': 1e-05, 'curvature_3b': 1e-08}}}
+    'db_path': 'data.db', 'features_path': 'features.h5', 'n_cores': 4, 'parallel': 'python', 'fit_forces': True, 'column_prefix': 'x', 'batch_size': 100, 'table_template': 'features_{}'}, 'learning': {'features_path': 'features.h5', 'splits_path': 'splits.json', 'weight': 0.5, 'model_path': 'model.json', 'batch_size': 2500, 'regularizer': {'ridge_1b': 1e-08, 'curvature_1b': 0, 'ridge_2b': 0, 'curvature_2b': 1e-08, 'ridge_3b': 1e-05, 'curvature_3b': 1e-08}, "repulsion_correction": False, "min_curvature": 0.0, "repulsion_suffix": "_repulsion"}}
 
 # Find all files in the current directory
 
@@ -20,10 +20,73 @@ def find_files():
             files.append(file)
     return files
 
-# Parse data files
+def get_settings(args):
+    if isinstance(args, dict):
+        if "settings" in args:
+            settings = yaml.load(open(args['settings'], 'r'), Loader=yaml.FullLoader)
+        else:
+            settings = args
+    elif isinstance(args, str):
+        settings = yaml.load(open(args, 'r'), Loader=yaml.FullLoader)
+    else:
+        raise ValueError("Invalid argument. Must be args passed from console, settings dict or path to settings file.")
+    return settings
+
+
+def generate_config_json(degree, atoms):
+    """
+    Generate config JSON file
+    """
+
+    import copy
+    settings = copy.deepcopy(default_settings)
+
+    from uf3.data import composition
+    chemical_system = composition.ChemicalSystem(element_list=atoms,
+                                             degree=degree)
+
+    r_min_map = {}
+    r_max_map = {}
+    res_map   = {}
+    for interaction in ["-".join(i) for i in chemical_system.interactions_map[2]]:
+        r_min_map[interaction] = 0
+        r_max_map[interaction] = 5
+        res_map[interaction]   = 15
+
+    if degree == 3:
+        for interaction in ["-".join(i) for i in chemical_system.interactions_map[3]]:
+            r_min_map[interaction] = [0,0,0]
+            r_max_map[interaction] = [3,3,6]
+            res_map[interaction]   = [3,3,6]
+
+    settings['basis']['r_min'] = r_min_map
+    settings['basis']['r_max'] = r_max_map
+    settings['basis']['resolution'] = res_map
+    settings['elements'] = atoms
+    settings['degree'] = degree
+
+    return settings
+
+
+def config(settings):
+    """
+    Generate a config file
+    """
+
+    if settings["atoms"] is None:
+        print("Please provide a list of atoms, separated by spaces.")
+
+    if not settings["degree"] in range(2,4):
+        print("Valid degrees are 2 and 3.")
+
+    yaml.dump(generate_config_json(settings["degree"], settings["atoms"]), open("input.yaml", 'w'), default_flow_style=None)
 
 
 def parse_data_files(settings, data_files):
+    """
+    Parse data files
+    """
+
     from uf3.data import io
     data_coordinator = io.DataCoordinator(atoms_key=settings.get('data', {}).get('keys', {}).get('atoms_key', default_settings['data']['keys']['atoms_key']),
                                           energy_key=settings.get('data', {}).get('keys', {}).get(
@@ -93,6 +156,8 @@ def create_bspline_config(settings, degree, chemical_system):
         interactions += chemical_system.interactions_map[3]
     logging.info(f"Determined interactions: {interactions}")
 
+    disabled_interactions = []
+
     # Minimum cutoff
     if not 'basis' in settings or not 'r_min' in settings['basis']:
         logging.warning(f"No minimum cutoff specified in settings.")
@@ -107,11 +172,16 @@ def create_bspline_config(settings, degree, chemical_system):
         r_min_map = {i: r_min if len(i) == 2 else [
             r_min, r_min, r_min * 2] for i in interactions}
     elif isinstance(r_min, dict):
+
+        from uf3.util.json_io import decode_interaction_map
+        r_min = decode_interaction_map(r_min)
+
         for i in interactions:
             if not i in r_min:
-                logging.warning(
-                    f"No minimum cutoff specified for interaction {i}. Defaulting to {default_settings['basis']['r_min']}.")
-                r_min[i] = default_settings['basis']['r_min']
+                disabled_interactions.append(i)
+                # logging.warning(
+                #     f"No minimum cutoff specified for interaction {i}. This interaction will not be modeled.")
+                r_min[i] = 0 if len(i) == 2 else [0, 0, 0]
         r_min_map = r_min
     else:
         logging.error(
@@ -134,11 +204,16 @@ def create_bspline_config(settings, degree, chemical_system):
         r_max_map = {i: r_max if len(i) == 2 else [
             r_max, r_max, r_max * 2] for i in interactions}
     elif isinstance(r_max, dict):
+
+        from uf3.util.json_io import decode_interaction_map
+        r_max = decode_interaction_map(r_max)
+
         for i in interactions:
             if not i in r_max:
-                logging.warning(
-                    f"No maximum cutoff specified for interaction {i}. Defaulting to {default_settings['basis']['r_max']}.")
-                r_max[i] = default_settings['basis']['r_max']
+                disabled_interactions.append(i)
+                # logging.warning(
+                #     f"No maximum cutoff specified for interaction {i}. This interaction will not be modeled.")
+                r_max[i] = 0 if len(i) == 2 else [0, 0, 0]
         r_max_map = r_max
     else:
         logging.error(
@@ -159,16 +234,27 @@ def create_bspline_config(settings, degree, chemical_system):
         resolution_map = {i: resolution if len(
             i) == 2 else [resolution, resolution, resolution * 2] for i in interactions}
     elif isinstance(resolution, dict):
+
+        from uf3.util.json_io import decode_interaction_map
+        resolution = decode_interaction_map(resolution)
+
         for i in interactions:
             if not i in resolution:
-                logging.warning(
-                    f"No resolution specified for interaction {i}. Defaulting to {default_settings['basis']['resolution']}.")
-                resolution[i] = default_settings['basis']['resolution']
+                disabled_interactions.append(i)
+                # logging.warning(
+                #     f"No resolution specified for interaction {i}. This interaction will not be modeled.")
+                resolution[i] = 0 if len(i) == 2 else [0, 0, 0]
         resolution_map = resolution
     else:
         logging.error(
             "Resolution must be a dict, string, or integer. Exiting.")
         sys.exit(1)
+
+    if disabled_interactions:
+        keys = list(dict.fromkeys(disabled_interactions))
+        logging.warning(
+                    f"Several interactions were not specified and are not modeled. Specify cutoffs and resolution to include them in the fit: {keys}")
+        
 
     logging.info(f"Using resolutions: {resolution_map}")
 
@@ -195,13 +281,17 @@ def create_bspline_config(settings, degree, chemical_system):
 
     logging.info(f"Using trailing trim of {trailing_trim}.")
 
+    offset_1b = settings.get('basis', {}).get(
+        'fit_offsets', default_settings['basis']['fit_offsets'])
+
     from uf3.representation import bspline
     bspline_config = bspline.BSplineBasis(chemical_system,
                                           r_min_map=r_min_map,
                                           r_max_map=r_max_map,
                                           resolution_map=resolution_map,
                                           leading_trim=leading_trim,
-                                          trailing_trim=trailing_trim)
+                                          trailing_trim=trailing_trim,
+                                          offset_1b=offset_1b)
 
     return bspline_config
 
@@ -332,7 +422,7 @@ def featurize(args):
     logging.info("Featurizing data")
 
     # Load settings
-    settings = yaml.load(open(args['settings'], 'r'), Loader=yaml.FullLoader)
+    settings = get_settings(args)
 
     # Set verbosity
     logging.getLogger().setLevel(settings.get(
@@ -365,14 +455,17 @@ def featurize(args):
 
     # Featurize
     from uf3.representation import process
-    from concurrent.futures import ProcessPoolExecutor
     representation = process.BasisFeaturizer(bspline_config)
 
     if settings.get('features', {}).get('parallel', default_settings['features']['parallel']) == 'python':
+        from concurrent.futures import ProcessPoolExecutor
         client = ProcessPoolExecutor(max_workers=n_cores)
+    elif settings.get('features', {}).get('parallel', default_settings['features']['parallel']) == 'mpi':
+        import mpi4py.futures as mpf
+        client = mpf.MPIPoolExecutor(max_workers=n_cores)
     else:
         logging.error(
-            "Only python multiprocessing is supported at this time. Exiting.")
+            "Only Python and MPI multiprocessing is supported at this time. Exiting.")
         sys.exit(1)
 
     filename = get_features_filename(settings)
@@ -413,12 +506,12 @@ def featurize(args):
 
 def get_features_filename(settings):
     filename = settings.get('features', {}).get(
-        'filename', default_settings['features']['features_path'])
+        'features_path', default_settings['features']['features_path'])
     if not isinstance(filename, str):
         logging.error("Filename must be a string. Exiting.")
         sys.exit(1)
 
-    logging.info(f"Saving features to {filename}.")
+    logging.info(f"Features stored at {filename}.")
     return filename
 
 
@@ -427,14 +520,23 @@ def fit(args):
     logging.info("Fitting model")
 
     # Load settings
-    settings = yaml.load(open(args['settings'], 'r'), Loader=yaml.FullLoader)
+    settings = get_settings(args)
 
     # Set verbosity
     logging.getLogger().setLevel(settings.get(
         'verbose', default_settings['verbose']))
 
     # Load data
-    df_data = load_data(settings)
+    import pandas as pd
+    if "data" in settings:
+        if "train_pickle" in settings["data"]:
+            pickle_path = settings["data"]["train_pickle"]
+        else:
+            pickle_path = settings.get(
+                'data', default_settings['data']).get('pickle_path')
+    if os.path.isfile(pickle_path):
+        logging.info(f"Loading data from pickle {pickle_path}")
+        df_data = pd.read_pickle(pickle_path)
 
     # Elements
     element_list = get_element_list(settings)
@@ -507,3 +609,85 @@ def fit(args):
     model.to_json(model_path)
 
     logging.info(f"Model fit complete and stored to {model_path}.")
+
+    if settings.get('learning', {}).get(
+        'repulsion_correction', default_settings['learning']['repulsion_correction']):
+        from uf3.data import io
+        from uf3.data import analyze
+        data_coordinator = io.DataCoordinator()
+        data_coordinator.load_dataframe(df_data)
+        atoms_key = data_coordinator.atoms_key
+        analyzer = analyze.DataAnalyzer(model.bspline_config.chemical_system, 
+                                        r_cut=10.0,
+                                        bins=0.01)
+        analyzer.load_entries(df_data[atoms_key])
+        analysis = analyzer.analyze()
+        min_curvature = settings.get('learning', {}).get(
+            'min_curvature', default_settings['learning']['min_curvature'])
+        for pair in analysis["lower_bounds"].keys():
+            model.fix_repulsion_2b(pair, r_target=analysis["lower_bounds"][pair], min_curvature=min_curvature)
+
+        
+        model_repulsion_suffix = settings.get('learning', {}).get(
+            'repulsion_suffix', default_settings['learning']['repulsion_suffix'])
+
+        model.to_json(".".join(model_path.split(".")[:-1]) + model_repulsion_suffix + ".json")
+
+
+def predict(args):
+
+    # Load settings
+    settings = get_settings(args)
+
+    # Set verbosity
+    logging.getLogger().setLevel(settings.get(
+        'verbose', default_settings['verbose']))
+
+    # Load data
+    import pandas as pd
+    if "data" in settings:
+        if "test_pickle" in settings["data"]:
+            pickle_path = settings["data"]["test_pickle"]
+        else:
+            pickle_path = settings.get(
+                'data', default_settings['data']).get('pickle_path')
+    if os.path.isfile(pickle_path):
+        logging.info(f"Loading data from pickle {pickle_path}")
+        df_data = pd.read_pickle(pickle_path)
+    else:
+        logging.error(f"Data not available at {pickle_path}.")
+
+    # Locate features
+    filename = get_features_filename(settings)
+
+    # Load model
+    from uf3.regression import least_squares
+    model_path = settings.get('learning', {}).get(
+        'model_path', default_settings['learning']['model_path'])
+    model = least_squares.WeightedLinearModel.from_json(model_path)
+
+    logging.info(f"Predicting with model {model_path}")
+
+    # Batched predict
+    y_e, p_e, y_f, p_f, rmse_e, rmse_f = model.batched_predict(
+        filename, keys=list(df_data.index))
+
+    return y_e, p_e, y_f, p_f, rmse_e, rmse_f
+
+def error(args):
+
+    y_e, p_e, y_f, p_f, rmse_e, rmse_f = predict(args)
+
+    logging.info("Calculating errors")
+    
+    import numpy as np
+    mae_e = np.mean(np.abs(y_e - p_e))  # (eV/atom)
+    mae_f = np.mean(np.abs(y_f - p_f))  # (eV/Angstrom)
+
+    # Print results
+    logging.info(f"RMSE (eV/atom): {rmse_e:.4f}")
+    logging.info(f"RMSE (eV/Angstrom): {rmse_f:.4f}")
+    logging.info(f"MAE (eV/atom): {mae_e:.4f}")
+    logging.info(f"MAE (eV/Angstrom): {mae_f:.4f}")
+
+    return rmse_e, rmse_f, mae_e, mae_f
