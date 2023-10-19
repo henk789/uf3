@@ -302,12 +302,11 @@ class WeightedLinearModel(BasicLinearModel):
         if x_f is not None:
             warnings.filterwarnings("error", append=True)  # to catch divide by zero warnings
             try:
-                energy_weight = 1 / len(y_e) / np.std(y_e)
-                force_weight = 1 / len(y_f) / np.std(y_f)
-            except (ZeroDivisionError, FloatingPointError, RuntimeWarning):
+                energy_weight = 1 / np.sqrt(len(y_e)) / np.std(y_e)
+                force_weight = 1 / np.sqrt(len(y_f)) / np.std(y_f)
+            except (ZeroDivisionError, FloatingPointError):
                 energy_weight = 1.0
-                force_weight = 1 / len(y_f)
-            warnings.filters.pop()  # undo the filter
+                force_weight = 1 / np.sqrt(len(y_f))
             x_f, y_f = freeze_columns(x_f,
                                       y_f,
                                       self.mask,
@@ -350,10 +349,10 @@ class WeightedLinearModel(BasicLinearModel):
             gram (np.ndarray): gram matrix (x^T x) for fitting.
             ordinate (np.ndarray): ordinate (x^T y) for fitting.
         """
-        gram = (((weight * energy_weight) ** 2 * gram_e)
-                + (((1 - weight) * force_weight) ** 2 * gram_f))
-        ordinate = (((weight * energy_weight) ** 2 * ord_e)
-                    + (((1 - weight) * force_weight) ** 2 * ord_f))
+        gram = ((weight * energy_weight**2 * gram_e)
+                + ((1 - weight) * force_weight**2 * gram_f))
+        ordinate = ((weight * energy_weight**2 * ord_e)
+                    + ((1 - weight) * force_weight**2 * ord_f))
         return gram, ordinate
 
     def fit_from_file(self,
@@ -405,14 +404,8 @@ class WeightedLinearModel(BasicLinearModel):
             gram_f += g_f
             ord_e += o_e
             ord_f += o_f
-        warnings.filterwarnings("error", append=True)  # to catch divide by zero warnings
-        try:
-            energy_weight = 1 / e_variance.n / e_variance.std
-            force_weight = 1 / f_variance.n / f_variance.std
-        except (ZeroDivisionError, FloatingPointError, RuntimeWarning):
-            energy_weight = 1.0
-            force_weight = 1 / f_variance.n
-        warnings.filters.pop()  # undo the filter
+        energy_weight = 1 / np.sqrt(e_variance.n) / e_variance.std
+        force_weight = 1 / np.sqrt(f_variance.n) / f_variance.std
         gram, ordinate = self.combine_weighted_gram(gram_e,
                                                     gram_f,
                                                     ord_e,
